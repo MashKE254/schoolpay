@@ -699,4 +699,131 @@ function createAccountWithBalance($pdo, $account_code, $account_name, $account_t
         return $e->getMessage();
     }
 }
+
+
+// Example of updated service payment function
+function recordServicePayment($pdo, $payment_date, $provider_name, $account_id, $amount, $description) {
+    try {
+        // Start transaction
+        $pdo->beginTransaction();
+        
+        // Insert expense transaction
+        $stmt = $pdo->prepare("
+            INSERT INTO expense_transactions 
+            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type) 
+            VALUES (?, ?, ?, ?, 'debit', ?, 'service')
+        ");
+        $stmt->execute([$payment_date, $description, $amount, $account_id, $provider_name]);
+        
+        // Update account balance
+        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
+        $stmt->execute([$amount, $account_id]);
+        
+        // Commit transaction
+        $pdo->commit();
+        return ['success' => true];
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+// Example of updated supplier payment function
+function recordSupplierPayment($pdo, $payment_date, $supplier_name, $invoice_number, $account_id, $amount, $description) {
+    try {
+        // Start transaction
+        $pdo->beginTransaction();
+        
+        // Insert expense transaction
+        $stmt = $pdo->prepare("
+            INSERT INTO expense_transactions 
+            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type, invoice_number) 
+            VALUES (?, ?, ?, ?, 'debit', ?, 'supplier', ?)
+        ");
+        $stmt->execute([$payment_date, $description, $amount, $account_id, $supplier_name, $invoice_number]);
+        
+        // Update account balance
+        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
+        $stmt->execute([$amount, $account_id]);
+        
+        // Commit transaction
+        $pdo->commit();
+        return ['success' => true];
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+function updateAccountBalance($pdo, $account_id) {
+    try {
+        // Get the account type (to determine if debits increase or decrease the balance)
+        $stmt = $pdo->prepare("SELECT account_type FROM accounts WHERE id = ?");
+        $stmt->execute([$account_id]);
+        $account = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$account) {
+            return false;
+        }
+        
+        // Calculate the new balance based on debits and credits
+        $stmt = $pdo->prepare("
+            SELECT 
+                SUM(CASE WHEN transaction_type = 'debit' THEN amount ELSE 0 END) as total_debit,
+                SUM(CASE WHEN transaction_type = 'credit' THEN amount ELSE 0 END) as total_credit
+            FROM expense_transactions 
+            WHERE account_id = ?
+        ");
+        $stmt->execute([$account_id]);
+        $totals = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $totalDebit = $totals['total_debit'] ?? 0;
+        $totalCredit = $totals['total_credit'] ?? 0;
+        
+        // Calculate balance based on account type
+        // Assets and Expenses increase with debits, decrease with credits
+        // Liabilities, Equity, and Revenue increase with credits, decrease with debits
+        $balance = 0;
+        
+        if (in_array($account['account_type'], ['Assets', 'Expenses'])) {
+            $balance = $totalDebit - $totalCredit;
+        } else {
+            $balance = $totalCredit - $totalDebit;
+        }
+        
+        // Update the account balance
+        $update = $pdo->prepare("UPDATE accounts SET balance = ? WHERE id = ?");
+        $update->execute([$balance, $account_id]);
+        
+        return true;
+    } catch (Exception $e) {
+        error_log("Error updating account balance: " . $e->getMessage());
+        return false;
+    }
+}
+// Example of updated vehicle expense function
+function recordVehicleExpense($pdo, $expense_date, $vehicle_id, $expense_type, $account_id, $amount, $odometer, $description) {
+    try {
+        // Start transaction
+        $pdo->beginTransaction();
+        
+        // Insert expense transaction
+        $stmt = $pdo->prepare("
+            INSERT INTO expense_transactions 
+            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type, expense_type, odometer_reading) 
+            VALUES (?, ?, ?, ?, 'debit', ?, 'vehicle', ?, ?)
+        ");
+        $stmt->execute([$expense_date, $description, $amount, $account_id, $vehicle_id, $expense_type, $odometer]);
+        
+        // Update account balance
+        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
+        $stmt->execute([$amount, $account_id]);
+        
+        // Commit transaction
+        $pdo->commit();
+        return ['success' => true];
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
 ?>

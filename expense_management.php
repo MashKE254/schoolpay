@@ -1,1029 +1,1073 @@
 <?php
-// expense_management.php - Expense Management / Accountant Center
+// Start with session and includes
+session_start();
 require 'config.php';
 require 'functions.php';
+
+
+// Initialize message variables
+$success_message = '';
+$error_messages = [];
+
+// Handle new account submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'add_account') {
+    $account_code = $_POST['account_code'];
+    $account_name = $_POST['account_name'];
+    $account_type = $_POST['account_type'];
+    $opening_balance = $_POST['opening_balance'] ?? 0;
+    
+    // Validate inputs
+    $errors = [];
+    
+    // Check if account code already exists
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM accounts WHERE account_code = ?");
+    $stmt->execute([$account_code]);
+    if ($stmt->fetchColumn() > 0) {
+        $error_messages[] = "Account code already exists";
+    }
+    
+    if (empty($error_messages)) {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO accounts (account_code, account_name, account_type, balance) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$account_code, $account_name, $account_type, $opening_balance]);
+            
+            // Set success message instead of redirecting
+            $success_message = "Account added successfully!";
+        } catch (PDOException $e) {
+            $error_messages[] = "Database error: " . $e->getMessage();
+        }
+    }
+}
+
+// Get all accounts (do this after handling the form to show newly added accounts)
+$accounts = $pdo->query("SELECT * FROM accounts ORDER BY account_code ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+// Get all transactions for the history tab - UPDATED to use expenses table
+$transactions = $pdo->query("
+    SELECT 
+        et.id, 
+        et.transaction_date, 
+        et.description, 
+        et.amount, 
+        et.type,
+        a.account_code,
+        a.account_name,
+        et.transaction_type
+    FROM 
+        expenses et
+    JOIN 
+        accounts a ON et.account_id = a.id
+    ORDER BY 
+        et.transaction_date DESC, 
+        et.id DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// Now include the header (after all processing is done)
 include 'header.php';
-
-// Add this debugging function
-function debug_log($message) {
-    // Uncomment this for debugging
-    // echo "<div class='alert alert-info'>Debug: " . htmlspecialchars($message) . "</div>";
-}
-
-// Handle form submissions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['add_account'])) {
-        $account_code = $_POST['account_code'];
-        $account_name = $_POST['account_name'];
-        $account_type = $_POST['account_type'];
-        $starting_balance = floatval($_POST['starting_balance']);
-        
-        $result = createAccountWithBalance($pdo, $account_code, $account_name, $account_type, $starting_balance);
-        if ($result === true) {
-            echo '<div class="alert alert-success">Account created successfully!</div>';
-        } else {
-            echo '<div class="alert alert-danger">' . htmlspecialchars($result) . '</div>';
-        }
-    } elseif (isset($_POST['edit_account'])) {
-        $id = $_POST['account_id'];
-        $account_code = $_POST['account_code'];
-        $account_name = $_POST['account_name'];
-        $account_type = $_POST['account_type'];
-        
-        if (updateAccount($pdo, $id, $account_code, $account_name, $account_type)) {
-            echo '<div class="alert alert-success">Account updated successfully!</div>';
-        } else {
-            echo '<div class="alert alert-danger">Failed to update account.</div>';
-        }
-    } elseif (isset($_POST['delete_account'])) {
-        $id = $_POST['account_id'];
-        
-        if (deleteAccount($pdo, $id)) {
-            echo '<div class="alert alert-success">Account deleted successfully!</div>';
-        } else {
-            echo '<div class="alert alert-danger">Failed to delete account. Make sure the account has no transactions.</div>';
-        }
-    } elseif (isset($_POST['add_journal_entry'])) {
-        $date = $_POST['date'];
-        $debit_account = $_POST['debit_account'];
-        $credit_account = $_POST['credit_account'];
-        $amount = $_POST['amount'];
-        $description = $_POST['description'];
-        
-        debug_log("Creating journal entry: Debit: $debit_account, Credit: $credit_account, Amount: $amount");
-        
-        if (createJournalEntry($pdo, $date, $debit_account, $credit_account, $amount, $description)) {
-            echo '<div class="alert alert-success">Journal entry added successfully!</div>';
-        } else {
-            echo '<div class="alert alert-danger">Failed to add journal entry.</div>';
-        }
-    } elseif (isset($_POST['pay_supplier'])) {
-        $date = $_POST['date'];
-        $supplier_name = $_POST['supplier_name'];
-        $amount = $_POST['amount'];
-        $payment_method = $_POST['payment_method'];
-        $description = $_POST['description'];
-        
-        // Get the Accounts Payable account ID
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '2000'");
-        $stmt->execute();
-        $ap_account_id = $stmt->fetchColumn();
-        
-        // Get the Cash/Bank account ID based on payment method
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = ?");
-        $stmt->execute([$payment_method === 'Cash' ? '1000' : '1001']);
-        $cash_account_id = $stmt->fetchColumn();
-        
-        debug_log("Supplier payment: AP account: $ap_account_id, Cash account: $cash_account_id, Amount: $amount");
-        
-        if ($ap_account_id && $cash_account_id) {
-            if (createJournalEntry($pdo, $date, $ap_account_id, $cash_account_id, $amount, "Payment to $supplier_name: $description")) {
-                echo '<div class="alert alert-success">Supplier payment recorded successfully!</div>';
-                // Force reload journal entries
-                $journalEntries = getJournalEntries($pdo, true);
-            } else {
-                echo '<div class="alert alert-danger">Failed to record supplier payment.</div>';
-            }
-        } else {
-            echo '<div class="alert alert-danger">Required accounts not found. Please set up Accounts Payable and Cash/Bank accounts.</div>';
-        }
-    } elseif (isset($_POST['pay_vendor'])) {
-        $date = $_POST['date'];
-        $vendor_name = $_POST['vendor_name'];
-        $expense_category = $_POST['expense_category'];
-        $amount = $_POST['amount'];
-        $payment_method = $_POST['payment_method'];
-        $description = $_POST['description'];
-        
-        // Get the expense account ID
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_name = ?");
-        $stmt->execute([$expense_category]);
-        $expense_account_id = $stmt->fetchColumn();
-        
-        // Get the Cash/Bank account ID based on payment method
-        $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = ?");
-        $stmt->execute([$payment_method === 'Cash' ? '1000' : '1001']);
-        $cash_account_id = $stmt->fetchColumn();
-        
-        debug_log("Vendor payment: Expense account: $expense_account_id, Cash account: $cash_account_id, Amount: $amount");
-        
-        if ($expense_account_id && $cash_account_id) {
-            if (createJournalEntry($pdo, $date, $expense_account_id, $cash_account_id, $amount, "Payment to $vendor_name for $expense_category: $description")) {
-                echo '<div class="alert alert-success">Vendor payment recorded successfully!</div>';
-                // Force reload journal entries
-                $journalEntries = getJournalEntries($pdo, true);
-            } else {
-                echo '<div class="alert alert-danger">Failed to record vendor payment.</div>';
-            }
-        } else {
-            echo '<div class="alert alert-danger">Required accounts not found. Please set up Expense and Cash/Bank accounts.</div>';
-        }
-    } elseif (isset($_POST['add_activity'])) {
-        $activity_name = $_POST['activity_name'];
-        $account_code = $_POST['account_code'];
-        $category = $_POST['category'];
-        
-        // Check if account code already exists
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM chart_of_accounts WHERE account_code = ?");
-        $stmt->execute([$account_code]);
-        if ($stmt->fetchColumn() > 0) {
-            echo '<div class="alert alert-danger">Account code already exists. Please use a different code.</div>';
-        } else {
-            // Create new expense account
-            $stmt = $pdo->prepare("
-                INSERT INTO chart_of_accounts (account_code, account_name, account_type)
-                VALUES (?, ?, 'Expense')
-            ");
-            if ($stmt->execute([$account_code, $activity_name])) {
-                echo '<div class="alert alert-success">New expense category added successfully!</div>';
-            } else {
-                echo '<div class="alert alert-danger">Failed to add new expense category.</div>';
-            }
-        }
-    } elseif (isset($_POST['add_category_type'])) {
-        $category_name = $_POST['category_name'];
-        $account_code_prefix = $_POST['account_code_prefix'];
-        
-        // Check if account code prefix already exists
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM expense_categories WHERE account_code_prefix = ?");
-        $stmt->execute([$account_code_prefix]);
-        if ($stmt->fetchColumn() > 0) {
-            echo '<div class="alert alert-danger">Category type already exists. Please use a different code prefix.</div>';
-        } else {
-            // Create new category type
-            $stmt = $pdo->prepare("
-                INSERT INTO expense_categories (category_name, account_code_prefix)
-                VALUES (?, ?)
-            ");
-            if ($stmt->execute([$category_name, $account_code_prefix])) {
-                echo '<div class="alert alert-success">New category type added successfully!</div>';
-            } else {
-                echo '<div class="alert alert-danger">Failed to add new category type.</div>';
-            }
-        }
-    }
-}
-
-// Modify function to allow forced refresh
-function getJournalEntries($pdo, $force_refresh = false) {
-    static $entries = null;
-    
-    if ($entries === null || $force_refresh) {
-        $stmt = $pdo->prepare("
-            SELECT je.id, je.date, je.amount, je.description,
-                   deb.account_name as debit_account_name,
-                   cred.account_name as credit_account_name
-            FROM journal_entries je
-            JOIN chart_of_accounts deb ON je.debit_account = deb.id
-            JOIN chart_of_accounts cred ON je.credit_account = cred.id
-            ORDER BY je.date DESC, je.id DESC
-        ");
-        $stmt->execute();
-        $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-    
-    return $entries;
-}
-
-// Get fresh data on page load
-$journalEntries = getJournalEntries($pdo, true);
-$accounts = getChartOfAccountsWithBalances($pdo);
-
-// Get all expense accounts
-$stmt = $pdo->prepare("
-    SELECT account_code, account_name 
-    FROM chart_of_accounts 
-    WHERE account_type = 'Expense' 
-    AND (
-        account_code LIKE '51%' OR  -- Activities
-        account_code LIKE '52%' OR  -- Books
-        account_code LIKE '53%' OR  -- Uniforms
-        account_code LIKE '54%' OR  -- Stationery
-        account_code LIKE '55%'     -- Other Supplies
-    )
-    ORDER BY account_name
-");
-$stmt->execute();
-$expense_categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Get all category types
-$stmt = $pdo->prepare("
-    SELECT category_name, account_code_prefix 
-    FROM expense_categories 
-    ORDER BY category_name
-");
-$stmt->execute();
-$category_types = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Check if required accounts exist
-$stmt = $pdo->prepare("SELECT COUNT(*) FROM chart_of_accounts WHERE account_code IN ('1000', '1001', '2000')");
-$stmt->execute();
-$required_accounts_count = $stmt->fetchColumn();
-if ($required_accounts_count < 3) {
-    echo '<div class="alert alert-warning">Some required accounts (Cash, Bank, or Accounts Payable) may be missing. Please set them up in the Chart of Accounts.</div>';
-}
 ?>
-<h2>Expense Management / Accountant Center</h2>
-<div class="tab-container">
-  <div class="tabs">
-      <button class="tab-link" onclick="openTab(event, 'journalTab')">Journal Entries</button>
-      <button class="tab-link" onclick="openTab(event, 'coaTab')">Chart of Accounts</button>
-      <button class="tab-link" onclick="openTab(event, 'supplierTab')">Pay Suppliers</button>
-      <button class="tab-link" onclick="openTab(event, 'vendorTab')">Pay Vendors</button>
-  </div>
-    
-  <div id="journalTab" class="tab-content">
-        <div class="card">
-            <h3>Add New Journal Entry</h3>
-            <form method="POST" action="">
-                <input type="hidden" name="add_journal_entry" value="1">
-                <div class="form-group">
-                    <label for="date">Date:</label>
-                    <input type="date" id="date" name="date" required class="form-control" value="<?php echo date('Y-m-d'); ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label for="debit_account">Debit Account:</label>
-                    <select id="debit_account" name="debit_account" required class="form-control">
-                        <option value="">Select Account</option>
-                        <?php foreach ($accounts as $account): ?>
-                            <option value="<?php echo $account['id']; ?>">
-                                <?php echo htmlspecialchars($account['account_name'] . ' (' . $account['account_code'] . ')'); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="credit_account">Credit Account:</label>
-                    <select id="credit_account" name="credit_account" required class="form-control">
-                        <option value="">Select Account</option>
-                        <?php foreach ($accounts as $account): ?>
-                            <option value="<?php echo $account['id']; ?>">
-                                <?php echo htmlspecialchars($account['account_name'] . ' (' . $account['account_code'] . ')'); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="amount">Amount:</label>
-                    <input type="number" id="amount" name="amount" required class="form-control" step="0.01" min="0">
-                </div>
-                
-                <div class="form-group">
-                    <label for="description">Description:</label>
-                    <textarea id="description" name="description" class="form-control" rows="3"></textarea>
-                </div>
-                
-                <button type="submit" class="btn btn-primary">Add Journal Entry</button>
-            </form>
-        </div>
-        
-      <div class="card">
-          <h3>Journal Entries</h3>
-            <table class="table">
-              <thead>
-                  <tr>
-                      <th>ID</th>
-                      <th>Date</th>
-                      <th>Debit Account</th>
-                      <th>Credit Account</th>
-                      <th>Amount</th>
-                      <th>Description</th>
-                  </tr>
-              </thead>
-              <tbody>
-                  <?php foreach($journalEntries as $entry): ?>
-                  <tr>
-                      <td><?php echo htmlspecialchars($entry['id']); ?></td>
-                      <td><?php echo htmlspecialchars($entry['date']); ?></td>
-                      <td><?php echo htmlspecialchars($entry['debit_account_name']); ?></td>
-                      <td><?php echo htmlspecialchars($entry['credit_account_name']); ?></td>
-                      <td>$<?php echo number_format($entry['amount'], 2); ?></td>
-                      <td><?php echo htmlspecialchars($entry['description'] ?? ''); ?></td>
-                  </tr>
-                  <?php endforeach; ?>
-              </tbody>
-          </table>
-      </div>
-  </div>
-    
-  <div id="coaTab" class="tab-content">
-        <div class="card">
-            <h3>Add New Account</h3>
-            <form method="POST" action="">
-                <input type="hidden" name="add_account" value="1">
-                <div class="form-group">
-                    <label for="account_code">Account Code:</label>
-                    <input type="text" id="account_code" name="account_code" required class="form-control">
-                </div>
-                
-                <div class="form-group">
-                    <label for="account_name">Account Name:</label>
-                    <input type="text" id="account_name" name="account_name" required class="form-control">
-                </div>
-                
-                <div class="form-group">
-                    <label for="account_type">Account Type:</label>
-                    <select id="account_type" name="account_type" required class="form-control">
-                        <option value="Asset">Asset</option>
-                        <option value="Liability">Liability</option>
-                        <option value="Equity">Equity</option>
-                        <option value="Revenue">Revenue</option>
-                        <option value="Expense">Expense</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="starting_balance">Starting Balance:</label>
-                    <input type="number" id="starting_balance" name="starting_balance" class="form-control" step="0.01" min="0" value="0">
-                    <small class="form-text text-muted">Enter the initial balance for this account. For Assets and Expenses, enter a positive number. For Liabilities, Equity, and Revenue, enter a negative number.</small>
-                </div>
-                
-                <button type="submit" class="btn btn-primary">Add Account</button>
-            </form>
-        </div>
-        
-      <div class="card">
-          <h3>Chart of Accounts</h3>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Account Code</th>
-                        <th>Account Name</th>
-                        <th>Account Type</th>
-                        <th>Balance</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach($accounts as $account): ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($account['account_code']); ?></td>
-                        <td><?php echo htmlspecialchars($account['account_name']); ?></td>
-                        <td><?php echo htmlspecialchars($account['account_type']); ?></td>
-                        <td>$<?php echo number_format($account['balance'], 2); ?></td>
-                        <td>
-                            <button class="btn btn-sm btn-primary" onclick="editAccount(<?php echo $account['id']; ?>, '<?php echo addslashes($account['account_code']); ?>', '<?php echo addslashes($account['account_name']); ?>', '<?php echo $account['account_type']; ?>')">Edit</button>
-                            <form method="POST" action="" style="display: inline;">
-                                <input type="hidden" name="delete_account" value="1">
-                                <input type="hidden" name="account_id" value="<?php echo $account['id']; ?>">
-                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete this account?')">Delete</button>
-                            </form>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <div id="supplierTab" class="tab-content">
-        <div class="card">
-            <h3>Record Supplier Payment</h3>
-            <form method="POST" action="">
-                <input type="hidden" name="pay_supplier" value="1">
-                <div class="form-group">
-                    <label for="date">Payment Date:</label>
-                    <input type="date" id="date" name="date" required class="form-control" value="<?php echo date('Y-m-d'); ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label for="supplier_name">Supplier Name:</label>
-                    <input type="text" id="supplier_name" name="supplier_name" required class="form-control">
-                </div>
-                
-                <div class="form-group">
-                    <label for="amount">Amount:</label>
-                    <input type="number" id="amount" name="amount" required class="form-control" step="0.01" min="0">
-                </div>
-                
-                <div class="form-group">
-                    <label for="payment_method">Payment Method:</label>
-                    <select id="payment_method" name="payment_method" required class="form-control">
-                        <option value="Cash">Cash</option>
-                        <option value="Bank">Bank Transfer</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="description">Description:</label>
-                    <textarea id="description" name="description" class="form-control" rows="3" placeholder="Enter payment details or reference number"></textarea>
-                </div>
-                
-                <button type="submit" class="btn btn-primary">Record Payment</button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h3>Recent Supplier Payments</h3>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Supplier</th>
-                        <th>Amount</th>
-                        <th>Payment Method</th>
-                        <th>Description</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php 
-                    // Get supplier payments from journal entries - Use fresh query
-                    $stmt = $pdo->prepare("
-                        SELECT je.date, je.description, je.amount, 
-                               CASE 
-                                   WHEN je.credit_account = (SELECT id FROM chart_of_accounts WHERE account_code = '1000') THEN 'Cash'
-                                   WHEN je.credit_account = (SELECT id FROM chart_of_accounts WHERE account_code = '1001') THEN 'Bank'
-                                   ELSE 'Other'
-                               END as payment_method
-                        FROM journal_entries je
-                        WHERE je.debit_account = (SELECT id FROM chart_of_accounts WHERE account_code = '2000')
-                        ORDER BY je.date DESC, je.id DESC
-                        LIMIT 50
-                    ");
-                    $stmt->execute();
-                    $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                    
-                    foreach($payments as $payment): 
-                        // Extract supplier name from description
-                        $description = $payment['description'];
-                        $supplier_name = '';
-                        if (preg_match('/Payment to (.*?):/', $description, $matches)) {
-                            $supplier_name = $matches[1];
-                        }
-                    ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($payment['date']); ?></td>
-                        <td><?php echo htmlspecialchars($supplier_name); ?></td>
-                        <td>$<?php echo number_format($payment['amount'], 2); ?></td>
-                        <td><?php echo htmlspecialchars($payment['payment_method']); ?></td>
-                        <td><?php echo htmlspecialchars($description); ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <div id="vendorTab" class="tab-content">
-        <div class="card">
-            <h3>Record Vendor Payment</h3>
-            <form method="POST" action="">
-                <input type="hidden" name="pay_vendor" value="1">
-                <div class="form-group">
-                    <label for="date">Payment Date:</label>
-                    <input type="date" id="date" name="date" required class="form-control" value="<?php echo date('Y-m-d'); ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label for="vendor_name">Vendor Name:</label>
-                    <input type="text" id="vendor_name" name="vendor_name" required class="form-control">
-                </div>
-                
-                <div class="form-group">
-                    <label for="expense_category">Expense Category:</label>
-                    <select id="expense_category" name="expense_category" required class="form-control">
-                        <option value="">Select Category</option>
-                        <?php foreach($expense_categories as $category): ?>
-                            <option value="<?php echo htmlspecialchars($category['account_name']); ?>">
-                                <?php echo htmlspecialchars($category['account_name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                        <option value="add_new">+ Add New Category</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="amount">Amount:</label>
-                    <input type="number" id="amount" name="amount" required class="form-control" step="0.01" min="0">
-                </div>
-                
-                <div class="form-group">
-                    <label for="payment_method">Payment Method:</label>
-                    <select id="payment_method" name="payment_method" required class="form-control">
-                        <option value="Cash">Cash</option>
-                        <option value="Bank">Bank Transfer</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="description">Description:</label>
-                    <textarea id="description" name="description" class="form-control" rows="3" placeholder="Enter payment details or reference number"></textarea>
-                </div>
-                
-                <button type="submit" class="btn btn-primary">Record Payment</button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h3>Recent Vendor Payments</h3>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Vendor</th>
-                        <th>Category</th>
-                        <th>Amount</th>
-                        <th>Payment Method</th>
-                        <th>Description</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php 
-                    // Use fresh query
-                    $stmt = $pdo->prepare("
-                        SELECT je.date, je.description, je.amount, 
-                               CASE 
-                                   WHEN je.credit_account = (SELECT id FROM chart_of_accounts WHERE account_code = '1000') THEN 'Cash'
-                                   WHEN je.credit_account = (SELECT id FROM chart_of_accounts WHERE account_code = '1001') THEN 'Bank'
-                                   ELSE 'Other'
-                               END as payment_method,
-                               ca.account_name as category
-                        FROM journal_entries je
-                        JOIN chart_of_accounts ca ON je.debit_account = ca.id
-                        WHERE ca.account_type = 'Expense'
-                        AND (
-                            ca.account_code LIKE '51%' OR
-                            ca.account_code LIKE '52%' OR
-                            ca.account_code LIKE '53%' OR
-                            ca.account_code LIKE '54%' OR
-                            ca.account_code LIKE '55%'
-                        )
-                        ORDER BY je.date DESC, je.id DESC
-                        LIMIT 50
-                    ");
-                    $stmt->execute();
-                    $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                    
-                    foreach($payments as $payment): 
-                        // Extract vendor name from description
-                        $description = $payment['description'];
-                        $vendor_name = '';
-                        if (preg_match('/Payment to (.*?) for/', $description, $matches)) {
-                            $vendor_name = $matches[1];
-                        }
-                    ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($payment['date']); ?></td>
-                        <td><?php echo htmlspecialchars($vendor_name); ?></td>
-                        <td><?php echo htmlspecialchars($payment['category']); ?></td>
-                        <td>$<?php echo number_format($payment['amount'], 2); ?></td>
-                        <td><?php echo htmlspecialchars($payment['payment_method']); ?></td>
-                        <td><?php echo htmlspecialchars($description); ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-      </div>
-  </div>
-</div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>School Financial Management System</title>
 
-<!-- Edit Account Modal -->
-<div id="editAccountModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <span class="close" onclick="closeEditModal()">&times;</span>
-        <h3>Edit Account</h3>
-        <form method="POST" action="">
-            <input type="hidden" name="edit_account" value="1">
-            <input type="hidden" name="account_id" id="edit_account_id">
-            <div class="form-group">
-                <label for="edit_account_code">Account Code:</label>
-                <input type="text" id="edit_account_code" name="account_code" required class="form-control">
-            </div>
-            
-            <div class="form-group">
-                <label for="edit_account_name">Account Name:</label>
-                <input type="text" id="edit_account_name" name="account_name" required class="form-control">
-            </div>
-            
-            <div class="form-group">
-                <label for="edit_account_type">Account Type:</label>
-                <select id="edit_account_type" name="account_type" required class="form-control">
-                    <option value="Asset">Asset</option>
-                    <option value="Liability">Liability</option>
-                    <option value="Equity">Equity</option>
-                    <option value="Revenue">Revenue</option>
-                    <option value="Expense">Expense</option>
-                </select>
-            </div>
-            
-            <button type="submit" class="btn btn-primary">Update Account</button>
-        </form>
-    </div>
-</div>
+    <style>
+    /* Global Styles */
+:root {
+  --primary-color: #4a6fa5;
+  --primary-light: #6789bd;
+  --primary-dark: #365785;
+  --secondary-color: #67a57f;
+  --danger-color: #d9534f;
+  --warning-color: #f0ad4e;
+  --success-color: #5cb85c;
+  --gray-light: #f8f9fa;
+  --gray: #e9ecef;
+  --gray-dark: #343a40;
+  --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --border-radius: 8px;
+}
 
-<!-- Add New Category Modal -->
-<div id="addCategoryModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <span class="close" onclick="closeAddCategoryModal()">&times;</span>
-        <h3>Add New Expense Category</h3>
-        <form method="POST" action="">
-            <input type="hidden" name="add_activity" value="1">
-            <div class="form-group">
-                <label for="category">Category Type:</label>
-                <select id="category" name="category" required class="form-control">
-                    <option value="">Select Category Type</option>
-                    <?php foreach($category_types as $type): ?>
-                        <option value="<?php echo htmlspecialchars($type['account_code_prefix']); ?>">
-                            <?php echo htmlspecialchars($type['category_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                    <option value="add_new">+ Add New Category Type</option>
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label for="activity_name">Category Name:</label>
-                <input type="text" id="activity_name" name="activity_name" required class="form-control">
-            </div>
-            
-            <div class="form-group">
-                <label for="account_code">Account Code:</label>
-                <input type="text" id="account_code" name="account_code" required class="form-control" pattern="5[1-9][0-9]{2}" title="Account code must start with 51-59 followed by two digits">
-                <small class="form-text text-muted">Must start with the category prefix followed by two digits (e.g., 5105, 5201, etc.)</small>
-            </div>
-            
-            <button type="submit" class="btn btn-primary">Add Category</button>
-        </form>
-    </div>
-</div>
+body {
+  font-family: 'Roboto', 'Segoe UI', sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background-color: #f5f7fa;
+  margin: 0;
+  padding: 0;
+}
 
-<!-- Add New Category Type Modal -->
-<div id="addCategoryTypeModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <span class="close" onclick="closeAddCategoryTypeModal()">&times;</span>
-        <h3>Add New Category Type</h3>
-        <form method="POST" action="">
-            <input type="hidden" name="add_category_type" value="1">
-            <div class="form-group">
-                <label for="category_name">Category Type Name:</label>
-                <input type="text" id="category_name" name="category_name" required class="form-control" placeholder="e.g., Transportation, Equipment">
-            </div>
-            
-            <div class="form-group">
-                <label for="account_code_prefix">Account Code Prefix:</label>
-                <input type="text" id="account_code_prefix" name="account_code_prefix" required class="form-control" pattern="5[1-9]" title="Prefix must be between 51 and 59">
-                <small class="form-text text-muted">Must be a number between 51 and 59 (e.g., 56 for Transportation)</small>
-            </div>
-            
-            <button type="submit" class="btn btn-primary">Add Category Type</button>
-        </form>
-    </div>
-</div>
+h2 {
+  color: var(--primary-dark);
+  margin: 1.5rem 0;
+  font-weight: 600;
+  font-size: 2rem;
+  text-align: center;
+  position: relative;
+  padding-bottom: 10px;
+}
 
-<style>
-.tab-container {
-    margin: 20px 0;
+h2:after {
+  content: '';
+  position: absolute;
+  width: 80px;
+  height: 3px;
+  background-color: var(--primary-color);
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
 }
-.tabs {
-    margin-bottom: 20px;
+
+/* Tab Container and Navigation */
+.tab-nav {
+  display: flex;
+  background-color: var(--gray-light);
+  border-bottom: 1px solid var(--gray);
+  margin-bottom: 20px;
 }
-.tab-link {
-    padding: 10px 20px;
-    background: #f8f9fa;
-    border: 1px solid #ddd;
-    cursor: pointer;
+
+.tab-nav button {
+  padding: 15px 25px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--gray-dark);
+  transition: all 0.3s ease;
+  flex: 1;
+  text-align: center;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  margin-right: 0;
 }
-.tab-link.active {
-    background: #007bff;
-    color: white;
+
+.tab-nav button:hover {
+  background-color: rgba(74, 111, 165, 0.1);
+  color: var(--primary-color);
 }
-.tab-content {
-    display: none;
+
+.tab-nav button.active {
+  color: var(--primary-color);
+  border-bottom: 3px solid var(--primary-color);
+  background-color: white;
 }
-.tab-content.active {
-    display: block;
+
+/* Tab Content */
+.tab {
+  display: none;
+  padding: 20px;
+  background-color: white;
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow);
+  animation: fadeIn 0.5s ease;
+  border: none;
 }
+
+.tab.active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Form Styling */
 .form-group {
-    margin-bottom: 15px;
+  margin-bottom: 1.25rem;
 }
-.form-control {
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: var(--gray-dark);
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--gray);
+  border-radius: var(--border-radius);
+  font-size: 1rem;
+  transition: border 0.3s ease, box-shadow 0.3s ease;
+  box-sizing: border-box;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(74, 111, 165, 0.2);
+}
+
+/* Button Styling */
+button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  background-color: var(--primary-color);
+  color: white;
+}
+
+button:hover {
+  background-color: var(--primary-dark);
+}
+
+button[type="submit"] {
+  background-color: var(--success-color);
+  color: white;
+  width: auto;
+  padding: 12px 24px;
+  margin-top: 10px;
+  display: inline-block;
+}
+
+button[type="submit"]:hover {
+  background-color: #4cae4c;
+}
+
+button[type="button"] {
+  background-color: var(--secondary-color);
+  color: white;
+  margin-bottom: 15px;
+}
+
+button[type="button"]:hover {
+  background-color: #528c66;
+}
+
+/* Table Styling */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+  font-size: 0.95rem;
+  box-shadow: var(--shadow);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+}
+
+th, td {
+  padding: 12px 15px;
+  text-align: left;
+  border-bottom: 1px solid var(--gray);
+}
+
+th {
+  background-color: var(--gray-light);
+  color: var(--primary-dark);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+tr:hover {
+  background-color: rgba(74, 111, 165, 0.05);
+}
+
+.total-row {
+  font-weight: bold;
+  background-color: var(--gray-light);
+  padding: 10px;
+  border-radius: var(--border-radius);
+  margin: 15px 0;
+  text-align: right;
+}
+
+/* Journal Entry Specific Styling */
+.journal-line {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+/* Alert/Error Styling */
+.error {
+  color: var(--danger-color);
+  margin-top: 5px;
+  font-size: 0.9rem;
+}
+
+.success-message {
+  background-color: var(--success-color);
+  color: white;
+  padding: 10px;
+  border-radius: var(--border-radius);
+  margin-bottom: 15px;
+}
+
+.error-message {
+  background-color: var(--danger-color);
+  color: white;
+  padding: 10px;
+  border-radius: var(--border-radius);
+  margin-bottom: 15px;
+}
+
+/* Add Account Form */
+.add-account-section {
+  margin-bottom: 30px;
+  border: 1px solid var(--gray);
+  padding: 20px;
+  border-radius: var(--border-radius);
+  background-color: var(--gray-light);
+}
+
+.toggle-form {
+  margin-bottom: 15px;
+}
+
+.account-form {
+  display: none;
+}
+
+.account-form.show {
+  display: block;
+}
+
+/* Transaction History Specific Styling */
+.transaction-credit {
+  color: var(--success-color);
+  font-weight: 600;
+}
+
+.transaction-debit {
+  color: var(--danger-color);
+  font-weight: 600;
+}
+
+/* Filter controls */
+.filter-controls {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-controls .form-group {
+  flex: 1;
+  min-width: 200px;
+  margin-bottom: 0;
+}
+
+.search-box {
+  margin-bottom: 20px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .tab-nav {
+    flex-direction: column;
+  }
+  
+  .tab-nav button {
     width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-}
-.btn {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-}
-.btn-primary {
-    background: #007bff;
-    color: white;
-}
-.table {
+  }
+  
+  table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  
+  button {
+    display: block;
     width: 100%;
-    border-collapse: collapse;
-}
-.table th, .table td {
-    padding: 8px;
-    border: 1px solid #ddd;
-    text-align: left;
-}
-.table th {
-    background: #f8f9fa;
-}
-.alert {
-    padding: 10px;
-    margin-bottom: 20px;
-    border-radius: 4px;
-}
-.alert-success {
-    background: #d4edda;
-    color: #155724;
-}
-.alert-danger {
-    background: #f8d7da;
-    color: #721c24;
-}
-.modal {
-    display: none;
-    position: fixed;
-    z-index: 1;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0,0,0,0.4);
-}
+    margin-bottom: 10px;
+  }
+  
+  .journal-line {
+    grid-template-columns: 1fr;
+  }
 
-.modal-content {
-    background-color: #fefefe;
-    margin: 15% auto;
-    padding: 20px;
-    border: 1px solid #888;
-    width: 50%;
-    border-radius: 5px;
-}
-
-.close {
-    color: #aaa;
-    float: right;
-    font-size: 28px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.close:hover {
-    color: black;
-}
-
-.btn-sm {
-    padding: 4px 8px;
-    font-size: 12px;
-}
-
-.form-text {
-    font-size: 0.875rem;
-    color: #6c757d;
-}
-
-.supplier-payment-form {
-    max-width: 600px;
-    margin: 0 auto;
-}
-
-.payment-history {
-    margin-top: 30px;
-}
-
-.payment-summary {
-    background: #f8f9fa;
-    padding: 15px;
-    border-radius: 5px;
-    margin-bottom: 20px;
-}
-
-.payment-summary h4 {
-    margin-top: 0;
-    color: #333;
-}
-
-.payment-summary .amount {
-    font-size: 24px;
-    font-weight: bold;
-    color: #28a745;
-}
-
-.vendor-payment-form {
-    max-width: 600px;
-    margin: 0 auto;
-}
-
-.vendor-history {
-    margin-top: 30px;
-}
-
-.vendor-summary {
-    background: #f8f9fa;
-    padding: 15px;
-    border-radius: 5px;
-    margin-bottom: 20px;
-}
-
-.vendor-summary h4 {
-    margin-top: 0;
-    color: #333;
-}
-
-.vendor-summary .amount {
-    font-size: 24px;
-    font-weight: bold;
-    color: #28a745;
-}
-
-.activity-type-select {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    margin-bottom: 15px;
-}
-
-.category-type-select {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    margin-bottom: 15px;
+  .filter-controls {
+    flex-direction: column;
+  }
 }
 </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <div class="tab-nav">
+        <button class="active" onclick="openTab('charts')">Chart of Accounts</button>
+        <button onclick="openTab('journal')">Journal Entry</button>
+        <button onclick="openTab('service')">Service Payments</button>
+        <button onclick="openTab('supplier')">Supplier Payments</button>
+        <button onclick="openTab('vehicle')">Vehicle Expenses</button>
+        <button onclick="openTab('history')">Transaction History</button>
+    </div>
+
+    <!-- Chart of Accounts Tab -->
+    <div id="charts" class="tab active">
+        <h2>Chart of Accounts</h2>
+        
+        <!-- Add Account Section -->
+        <div class="add-account-section">
+            <!-- Display success message if there is one -->
+            <?php if (!empty($success_message)): ?>
+                <div class="success-message">
+                    <?= htmlspecialchars($success_message) ?>
+                </div>
+            <?php endif; ?>
+            
+            <!-- Display error messages if there are any -->
+            <?php if (!empty($error_messages)): ?>
+                <div class="error-message">
+                    <?php foreach ($error_messages as $error): ?>
+                        <p><?= htmlspecialchars($error) ?></p>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+            
+            <button type="button" class="toggle-form" onclick="toggleAccountForm()">
+                <i class="fas fa-plus"></i> Add New Account
+            </button>
+            
+            <div id="accountForm" class="account-form <?= (!empty($error_messages) || !empty($success_message)) ? 'show' : '' ?>">
+                <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>">
+                    <input type="hidden" name="action" value="add_account">
+                    <div class="form-group">
+                        <label for="account_code">Account Code</label>
+                        <input type="text" id="account_code" name="account_code" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="account_name">Account Name</label>
+                        <input type="text" id="account_name" name="account_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="account_type">Account Type</label>
+                        <select id="account_type" name="account_type" required>
+                            <option value="Assets">Assets</option>
+                            <option value="Liabilities">Liabilities</option>
+                            <option value="Equity">Equity</option>
+                            <option value="Revenue">Revenue</option>
+                            <option value="Expenses">Expenses</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="opening_balance">Opening Balance</label>
+                        <input type="number" id="opening_balance" name="opening_balance" step="0.01" value="0.00">
+                    </div>
+                    <button type="submit">Add Account</button>
+                </form>
+            </div>
+        </div>
+        
+        <table>
+            <tr>
+                <th>Code</th>
+                <th>Account Name</th>
+                <th>Type</th>
+                <th>Debit</th>
+                <th>Credit</th>
+                <th>Balance</th>
+                <th>Actions</th>
+            </tr>
+            <?php if (empty($accounts)): ?>
+                <tr>
+                    <td colspan="7" style="text-align: center;">No accounts found. Add your first account above.</td>
+                </tr>
+            <?php else: ?>
+                <?php foreach ($accounts as $account): ?>
+                <?php
+                    // Get debits and credits for this account from expenses
+                    $stmt = $pdo->prepare("
+                        SELECT 
+                            SUM(CASE WHEN transaction_type = 'debit' THEN amount ELSE 0 END) as total_debit,
+                            SUM(CASE WHEN transaction_type = 'credit' THEN amount ELSE 0 END) as total_credit
+                        FROM expenses 
+                        WHERE account_id = ?
+                    ");
+                    $stmt->execute([$account['id']]);
+                    $totals = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    $totalDebit = $totals['total_debit'] ?? 0;
+                    $totalCredit = $totals['total_credit'] ?? 0;
+                ?>
+                <tr data-account-id="<?= $account['id'] ?>">
+                    <td><?= htmlspecialchars($account['account_code']) ?></td>
+                    <td><?= htmlspecialchars($account['account_name']) ?></td>
+                    <td><?= htmlspecialchars($account['account_type']) ?></td>
+                    <td class="transaction-debit"><?= number_format($totalDebit, 2) ?></td>
+                    <td class="transaction-credit"><?= number_format($totalCredit, 2) ?></td>
+                    <td><?= number_format($account['balance'], 2) ?></td>
+                    <td><button onclick="viewAccountTransactions(<?= $account['id'] ?>)"><i class="fas fa-eye"></i> View</button></td>
+                </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </table>
+    </div>
+
+    <!-- Journal Entry Tab -->
+    <div id="journal" class="tab">
+        <h2>Journal Entry</h2>
+        <form id="journalForm" onsubmit="submitJournal(event)">
+            <div class="form-group">
+                <label>Entry Date</label>
+                <input type="date" name="entry_date" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description"></textarea>
+            </div>
+            <div id="journalLines">
+                <div class="journal-line">
+                    <select name="account[]" required>
+                        <?php foreach ($accounts as $acc): ?>
+                        <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <input type="number" name="debit[]" step="0.01" placeholder="Debit">
+                    <input type="number" name="credit[]" step="0.01" placeholder="Credit">
+                </div>
+            </div>
+            <button type="button" onclick="addJournalLine()">Add Line</button>
+            <div id="journalTotal" class="total-row"></div>
+            <button type="submit">Post Entry</button>
+        </form>
+    </div>
+
+    <!-- Service Payments Tab -->
+    <div id="service" class="tab">
+        <h2>Service Provider Payments</h2>
+        <form id="serviceForm" onsubmit="submitServicePayment(event)">
+            <div class="form-group">
+                <label>Payment Date</label>
+                <input type="date" name="payment_date" required>
+            </div>
+            <div class="form-group">
+                <label>Provider Name</label>
+                <input type="text" name="provider_name" required>
+            </div>
+            <div class="form-group">
+                <label>Account</label>
+                <select name="account_id" required>
+                    <?php foreach ($accounts as $acc): ?>
+                    <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Amount</label>
+                <input type="number" name="amount" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description"></textarea>
+            </div>
+            <button type="submit">Record Payment</button>
+        </form>
+    </div>
+
+    <!-- Supplier Payments Tab -->
+    <div id="supplier" class="tab">
+        <h2>Supplier Payments</h2>
+        <form id="supplierForm" onsubmit="submitSupplierPayment(event)">
+            <div class="form-group">
+                <label>Payment Date</label>
+                <input type="date" name="payment_date" required>
+            </div>
+            <div class="form-group">
+                <label>Supplier Name</label>
+                <input type="text" name="supplier_name" required>
+            </div>
+            <div class="form-group">
+                <label>Invoice Number</label>
+                <input type="text" name="invoice_number">
+            </div>
+            <div class="form-group">
+                <label>Account</label>
+                <select name="account_id" required>
+                    <?php foreach ($accounts as $acc): ?>
+                    <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Amount</label>
+                <input type="number" name="amount" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description"></textarea>
+            </div>
+            <button type="submit">Record Payment</button>
+        </form>
+    </div>
+
+    <!-- Vehicle Expenses Tab -->
+    <div id="vehicle" class="tab">
+        <h2>Vehicle Expenses</h2>
+        <form id="vehicleForm" onsubmit="submitVehicleExpense(event)">
+            <div class="form-group">
+                <label>Expense Date</label>
+                <input type="date" name="expense_date" required>
+            </div>
+            <div class="form-group">
+                <label>Vehicle ID/Registration</label>
+                <input type="text" name="vehicle_id" required>
+            </div>
+            <div class="form-group">
+                <label>Expense Type</label>
+                <select name="expense_type" required>
+                    <option value="fuel">Fuel</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="insurance">Insurance</option>
+                    <option value="repairs">Repairs</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Account</label>
+                <select name="account_id" required>
+                    <?php foreach ($accounts as $acc): ?>
+                    <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Amount</label>
+                <input type="number" name="amount" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label>Odometer Reading</label>
+                <input type="number" name="odometer" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description"></textarea>
+            </div>
+            <button type="submit">Record Expense</button>
+        </form>
+    </div>
+
+    <!-- Transaction History Tab -->
+    <div id="history" class="tab">
+        <h2>Transaction History</h2>
+        
+        <!-- Filter and Search Controls -->
+        <div class="filter-controls">
+            <div class="form-group">
+                <label for="filter-date-from">From Date</label>
+                <input type="date" id="filter-date-from">
+            </div>
+            <div class="form-group">
+                <label for="filter-date-to">To Date</label>
+                <input type="date" id="filter-date-to">
+            </div>
+            <div class="form-group">
+                <label for="filter-account">Account</label>
+                <select id="filter-account">
+                    <option value="">All Accounts</option>
+                    <?php foreach ($accounts as $acc): ?>
+                    <option value="<?= htmlspecialchars($acc['account_code']) ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="filter-type">Transaction Type</label>
+                <select id="filter-type">
+                    <option value="">All Types</option>
+                    <option value="debit">Debit</option>
+                    <option value="credit">Credit</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="search-box">
+            <input type="text" id="transaction-search" placeholder="Search by description..." style="width: 100%;">
+        </div>
+        
+        <table id="transactions-table">
+            <tr>
+                <th>Date</th>
+                <th>Account</th>
+                <th>Description</th>
+                <th>Type</th>
+                <th>Debit</th>
+                <th>Credit</th>
+            </tr>
+            <?php if (empty($transactions)): ?>
+                <tr>
+                    <td colspan="6" style="text-align: center;">No transactions found.</td>
+                </tr>
+            <?php else: ?>
+                <?php foreach ($transactions as $txn): ?>
+                <tr data-account="<?= htmlspecialchars($txn['account_code']) ?>" data-type="<?= htmlspecialchars($txn['transaction_type']) ?>">
+                    <td><?= date('Y-m-d', strtotime($txn['transaction_date'])) ?></td>
+                    <td><?= htmlspecialchars($txn['account_code']) ?> - <?= htmlspecialchars($txn['account_name']) ?></td>
+                    <td><?= htmlspecialchars($txn['description']) ?></td>
+                    <td><?= htmlspecialchars(ucfirst($txn['transaction_type'])) ?></td>
+                    <td class="transaction-debit">
+                        <?= $txn['transaction_type'] === 'debit' ? number_format($txn['amount'], 2) : '-' ?>
+                    </td>
+                    <td class="transaction-credit">
+                        <?= $txn['transaction_type'] === 'credit' ? number_format($txn['amount'], 2) : '-' ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </table>
+    </div>
 
 <script>
-function openTab(evt, tabName) {
-    var i, tabcontent, tablinks;
-    tabcontent = document.getElementsByClassName("tab-content");
-    for (i = 0; i < tabcontent.length; i++) {
-        tabcontent[i].className = tabcontent[i].className.replace(" active", "");
-    }
-    tablinks = document.getElementsByClassName("tab-link");
-    for (i = 0; i < tablinks.length; i++) {
-        tablinks[i].className = tablinks[i].className.replace(" active", "");
-    }
-    document.getElementById(tabName).className += " active";
-    evt.currentTarget.className += " active";
+// Tab navigation
+function openTab(tabName) {
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelectorAll('.tab-nav button').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(tabName).classList.add('active');
+    event.currentTarget.classList.add('active');
 }
 
-// Open the first tab by default
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelector('.tab-link').click();
-});
-
-function editAccount(id) {
-    // Get account details via AJAX or from a data attribute
-    // For simplicity, we'll just show the modal
-    document.getElementById('edit_account_id').value = id;
-    document.getElementById('editAccountModal').style.display = 'block';
+// Toggle Account Form
+function toggleAccountForm() {
+    const form = document.getElementById('accountForm');
+    form.classList.toggle('show');
 }
 
-function closeEditModal() {
-    document.getElementById('editAccountModal').style.display = 'none';
+// Journal Entry functions
+function addJournalLine() {
+    const line = document.createElement('div');
+    line.className = 'journal-line';
+    line.innerHTML = `
+        <select name="account[]" required>
+            <?php foreach ($accounts as $acc): ?>
+            <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option>
+            <?php endforeach; ?>
+        </select>
+        <input type="number" name="debit[]" step="0.01" placeholder="Debit">
+        <input type="number" name="credit[]" step="0.01" placeholder="Credit">
+    `;
+    document.getElementById('journalLines').appendChild(line);
+    calculateTotals();
 }
 
-// Close modal when clicking outside
-window.onclick = function(event) {
-    var modal = document.getElementById('editAccountModal');
-    if (event.target == modal) {
-        modal.style.display = 'none';
-    }
+function calculateTotals() {
+    let totalDebit = 0, totalCredit = 0;
+    document.querySelectorAll('.journal-line').forEach(line => {
+        const debit = parseFloat(line.querySelector('[name="debit[]"]').value) || 0;
+        const credit = parseFloat(line.querySelector('[name="credit[]"]').value) || 0;
+        totalDebit += debit;
+        totalCredit += credit;
+    });
+    document.getElementById('journalTotal').textContent = 
+        `Total Debit: ${totalDebit.toFixed(2)} | Total Credit: ${totalCredit.toFixed(2)}`;
+    return totalDebit === totalCredit;
 }
 
-// Add supplier payment form validation
-document.addEventListener('DOMContentLoaded', function() {
-    const supplierForm = document.querySelector('form[name="pay_supplier"]');
-    if (supplierForm) {
-        supplierForm.addEventListener('submit', function(e) {
-            const amount = parseFloat(document.getElementById('amount').value);
-            if (isNaN(amount) || amount <= 0) {
-                e.preventDefault();
-                alert('Please enter a valid amount greater than 0');
-            }
-        });
-    }
-});
-
-// Add vendor payment form validation
-document.addEventListener('DOMContentLoaded', function() {
-    const vendorForm = document.querySelector('form[name="pay_vendor"]');
-    if (vendorForm) {
-        vendorForm.addEventListener('submit', function(e) {
-            const amount = parseFloat(document.getElementById('amount').value);
-            if (isNaN(amount) || amount <= 0) {
-                e.preventDefault();
-                alert('Please enter a valid amount greater than 0');
-            }
-        });
-    }
-});
-
-// Add new category modal functionality
-document.addEventListener('DOMContentLoaded', function() {
-    const categorySelect = document.getElementById('expense_category');
-    if (categorySelect) {
-        categorySelect.addEventListener('change', function() {
-            if (this.value === 'add_new') {
-                document.getElementById('addCategoryModal').style.display = 'block';
-                this.value = ''; // Reset the select
-            }
-        });
+async function submitJournal(e) {
+    e.preventDefault();
+    if (!calculateTotals()) {
+        alert('Debit and Credit totals must match');
+        return;
     }
     
-    // Update account code based on category selection
-    const categoryType = document.getElementById('category');
-    const accountCode = document.getElementById('account_code');
-    if (categoryType && accountCode) {
-        categoryType.addEventListener('change', function() {
-            if (this.value && this.value !== 'add_new') {
-                accountCode.value = this.value + '00';
-            }
+    const formData = new FormData(e.target);
+    try {
+        const response = await fetch('journal_entry.php', {
+            method: 'POST',
+            body: formData
         });
+        const result = await response.json();
+        if (result.success) {
+            alert('Journal entry posted successfully');
+            e.target.reset();
+            // Refresh page to update account balances
+            window.location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
     }
-});
-
-function closeAddCategoryModal() {
-    document.getElementById('addCategoryModal').style.display = 'none';
 }
 
-// Close modal when clicking outside
-window.onclick = function(event) {
-    const modal = document.getElementById('addCategoryModal');
-    if (event.target == modal) {
-        modal.style.display = 'none';
+// Service payment submit function
+async function submitServicePayment(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(e.target);
+    try {
+        const response = await fetch('service_payment.php', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert('Service payment recorded successfully');
+            e.target.reset();
+            // Refresh page to update account balances
+            window.location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
     }
 }
 
-// Validate account code format
-document.getElementById('account_code').addEventListener('input', function(e) {
-    const pattern = /^5[1-9]\d{2}$/;
-    if (!pattern.test(this.value)) {
-        this.setCustomValidity('Account code must start with 51-59 followed by two digits');
-    } else {
-        this.setCustomValidity('');
+// Supplier payment submit function
+async function submitSupplierPayment(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(e.target);
+    try {
+        const response = await fetch('supplier_payment.php', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert('Supplier payment recorded successfully');
+            e.target.reset();
+            // Refresh page to update account balances
+            window.location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
     }
-});
+}
 
-// Add new category type modal functionality
+// Vehicle expense submit function
+async function submitVehicleExpense(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(e.target);
+    try {
+        const response = await fetch('vehicle_expense.php', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert('Vehicle expense recorded successfully');
+            e.target.reset();
+            // Refresh page to update account balances
+            window.location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Network error: ' + error.message);
+    }
+}
+
+// View account transactions function
+function viewAccountTransactions(accountId) {
+    // Switch to history tab
+    openTab('history');
+    
+    // Get the account code from the table for filtering
+    const accountRow = document.querySelector(`tr[data-account-id="${accountId}"]`);
+    if (accountRow) {
+        const accountCode = accountRow.querySelector('td:first-child').textContent;
+        // Set the filter
+        document.getElementById('filter-account').value = accountCode;
+        // Trigger the filter
+        filterTransactions();
+    }
+}
+
+// Transaction History Filter Functions
+function filterTransactions() {
+    const dateFrom = document.getElementById('filter-date-from').value;
+    const dateTo = document.getElementById('filter-date-to').value;
+    const accountFilter = document.getElementById('filter-account').value;
+    const typeFilter = document.getElementById('filter-type').value;
+    const searchTerm = document.getElementById('transaction-search').value.toLowerCase();
+    
+    const rows = document.querySelectorAll('#transactions-table tr:not(:first-child)');
+    
+    rows.forEach(row => {
+        let showRow = true;
+        
+        // Date range filter
+        if (dateFrom) {
+            const rowDate = new Date(row.cells[0].textContent);
+            const fromDate = new Date(dateFrom);
+            if (rowDate < fromDate) showRow = false;
+        }
+        
+        if (dateTo && showRow) {
+            const rowDate = new Date(row.cells[0].textContent);
+            const toDate = new Date(dateTo);
+            toDate.setDate(toDate.getDate() + 1); // Include the end date
+            if (rowDate > toDate) showRow = false;
+        }
+        
+        // Account filter
+        if (accountFilter && showRow) {
+            const rowAccount = row.getAttribute('data-account');
+            if (rowAccount !== accountFilter) showRow = false;
+        }
+        
+        // Transaction type filter
+        if (typeFilter && showRow) {
+            const rowType = row.getAttribute('data-type');
+            if (rowType !== typeFilter) showRow = false;
+        }
+        
+        // Description search
+        if (searchTerm && showRow) {
+            const description = row.cells[2].textContent.toLowerCase();
+            if (!description.includes(searchTerm)) showRow = false;
+        }
+        
+        // Show or hide row
+        row.style.display = showRow ? '' : 'none';
+    });
+    
+    // Show message if no results
+    const visibleRows = Array.from(rows).filter(row => row.style.display !== 'none');
+    const noResultsRow = document.getElementById('no-results-row');
+    
+    if (visibleRows.length === 0) {
+        if (!noResultsRow) {
+            const table = document.getElementById('transactions-table');
+            const newRow = table.insertRow();
+            newRow.id = 'no-results-row';
+            const cell = newRow.insertCell();
+            cell.colSpan = 6;
+            cell.style.textAlign = 'center';
+            cell.textContent = 'No transactions match your filters.';
+        }
+    } else if (noResultsRow) {
+        noResultsRow.remove();
+    }
+}
+
+// Event listeners for transaction filtering
 document.addEventListener('DOMContentLoaded', function() {
-    const categorySelect = document.getElementById('category');
-    if (categorySelect) {
-        categorySelect.addEventListener('change', function() {
-            if (this.value === 'add_new') {
-                document.getElementById('addCategoryTypeModal').style.display = 'block';
-                this.value = ''; // Reset the select
-            }
-        });
-    }
+    // Calculate totals for journal entries
+    calculateTotals();
     
-    // Update account code based on category selection
-    const categoryType = document.getElementById('category');
-    const accountCode = document.getElementById('account_code');
-    if (categoryType && accountCode) {
-        categoryType.addEventListener('change', function() {
-            if (this.value && this.value !== 'add_new') {
-                accountCode.value = this.value + '00';
-            }
-        });
-    }
+    // Add event listeners for transaction filtering
+    document.getElementById('filter-date-from').addEventListener('change', filterTransactions);
+    document.getElementById('filter-date-to').addEventListener('change', filterTransactions);
+    document.getElementById('filter-account').addEventListener('change', filterTransactions);
+    document.getElementById('filter-type').addEventListener('change', filterTransactions);
     
-    // Validate account code prefix
-    const accountCodePrefix = document.getElementById('account_code_prefix');
-    if (accountCodePrefix) {
-        accountCodePrefix.addEventListener('input', function(e) {
-            const pattern = /^5[1-9]$/;
-            if (!pattern.test(this.value)) {
-                this.setCustomValidity('Prefix must be a number between 51 and 59');
-            } else {
-                this.setCustomValidity('');
+    // Add debounced search for transaction descriptions
+    const searchInput = document.getElementById('transaction-search');
+    let debounceTimeout;
+    
+    searchInput.addEventListener('input', function() {
+        clearTimeout(debounceTimeout);
+        debounceTimeout = setTimeout(filterTransactions, 300);
+    });
+    
+    // Additional event listeners for journal entries
+    document.getElementById('journalLines').addEventListener('input', function(e) {
+        // Make sure only one field (debit or credit) has a value in each row
+        if (e.target.name === 'debit[]' && e.target.value) {
+            const row = e.target.closest('.journal-line');
+            const creditInput = row.querySelector('[name="credit[]"]');
+            creditInput.value = '';
+        } else if (e.target.name === 'credit[]' && e.target.value) {
+            const row = e.target.closest('.journal-line');
+            const debitInput = row.querySelector('[name="debit[]"]');
+            debitInput.value = '';
+        }
+        
+        calculateTotals();
+    });
+    
+    // Format currency values in tables
+    document.querySelectorAll('td:nth-child(5), td:nth-child(6)').forEach(cell => {
+        if (cell.textContent !== '-') {
+            const value = parseFloat(cell.textContent.replace(/,/g, ''));
+            if (!isNaN(value)) {
+                cell.textContent = value.toLocaleString('en-US', {
+                    style: 'decimal',
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
             }
-        });
-    }
+        }
+    });
 });
 
-function closeAddCategoryTypeModal() {
-    document.getElementById('addCategoryTypeModal').style.display = 'none';
-}
-
-// Close modal when clicking outside
-window.onclick = function(event) {
-    const modal = document.getElementById('addCategoryTypeModal');
-    if (event.target == modal) {
-        modal.style.display = 'none';
-    }
-}
-
-// Validate account code format
-document.getElementById('account_code').addEventListener('input', function(e) {
-    const pattern = /^5[1-9]\d{2}$/;
-    if (!pattern.test(this.value)) {
-        this.setCustomValidity('Account code must start with 51-59 followed by two digits');
-    } else {
-        this.setCustomValidity('');
-    }
+// Add data-attribute to account rows for filtering
+document.addEventListener('DOMContentLoaded', function() {
+    const accountRows = document.querySelectorAll('#charts table tr:not(:first-child)');
+    accountRows.forEach((row, index) => {
+        // Add account-id attribute for account filtering
+        row.setAttribute('data-account-id', index + 1);
+    });
 });
+
+// Export functions (for CSV export feature)
+function exportTransactionHistory() {
+    // Get visible rows only
+    const table = document.getElementById('transactions-table');
+    const rows = Array.from(table.querySelectorAll('tr:not([style*="display: none"])'));
+    
+    if (rows.length <= 1) {
+        alert('No data to export');
+        return;
+    }
+    
+    // Create CSV content
+    let csvContent = 'data:text/csv;charset=utf-8,';
+    
+    // Add headers
+    const headers = Array.from(rows[0].querySelectorAll('th')).map(th => `"${th.textContent}"`);
+    csvContent += headers.join(',') + '\r\n';
+    
+    // Add data rows
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const rowData = Array.from(row.querySelectorAll('td')).map(td => `"${td.textContent}"`);
+        csvContent += rowData.join(',') + '\r\n';
+    }
+    
+    // Create download link
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', 'transaction_history.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// Print function
+function printTransactionHistory() {
+    const printContent = document.getElementById('history').innerHTML;
+    const originalContent = document.body.innerHTML;
+    
+    document.body.innerHTML = `
+        <div style="padding: 20px;">
+            <h1 style="text-align: center;">Transaction History</h1>
+            <div>${printContent}</div>
+        </div>
+    `;
+    
+    window.print();
+    document.body.innerHTML = originalContent;
+    
+    // Reattach event listeners
+    document.addEventListener('DOMContentLoaded', function() {
+        calculateTotals();
+    });
+}
 </script>
 
-<?php include 'footer.php'; ?>
+<!-- Add Export and Print buttons to the history tab -->
+<div style="margin-top: 20px; text-align: right;">
+    <button onclick="exportTransactionHistory()"><i class="fas fa-file-export"></i> Export CSV</button>
+    <button onclick="printTransactionHistory()"><i class="fas fa-print"></i> Print</button>
+</div>
+
+</body>
+</html>

@@ -90,7 +90,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($invoice['items'] as $item): ?>
+                    <?php 
+                    // Group items by parent_id
+                    $parentItems = [];
+                    $childItems = [];
+                    
+                    foreach ($invoice['items'] as $item) {
+                        if (empty($item['parent_id'])) {
+                            $parentItems[$item['id']] = $item;
+                        } else {
+                            if (!isset($childItems[$item['parent_id']])) {
+                                $childItems[$item['parent_id']] = [];
+                            }
+                            $childItems[$item['parent_id']][] = $item;
+                        }
+                    }
+                    
+                    // Display parent items and their children
+                    foreach ($parentItems as $parentId => $item): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($item['item_name']); ?></td>
+                            <td><?php echo htmlspecialchars($item['description'] ?? ''); ?></td>
+                            <td><?php echo $item['quantity']; ?></td>
+                            <td>$<?php echo number_format($item['unit_price'], 2); ?></td>
+                            <td>$<?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?></td>
+                        </tr>
+                        
+                        <?php if (isset($childItems[$parentId])): ?>
+                            <?php foreach ($childItems[$parentId] as $childItem): ?>
+                                <tr class="child-item">
+                                    <td class="child-indent">- <?php echo htmlspecialchars($childItem['item_name']); ?></td>
+                                    <td><?php echo htmlspecialchars($childItem['description'] ?? ''); ?></td>
+                                    <td><?php echo $childItem['quantity']; ?></td>
+                                    <td>$<?php echo number_format($childItem['unit_price'], 2); ?></td>
+                                    <td>$<?php echo number_format($childItem['quantity'] * $childItem['unit_price'], 2); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                    
+                    <?php 
+                    // Display items without parent relationship if any
+                    $standalone_items = array_filter($invoice['items'], function($item) use ($parentItems, $childItems) {
+                        return !isset($parentItems[$item['id']]) && !in_array($item, array_merge(...array_values($childItems)));
+                    });
+                    
+                    foreach ($standalone_items as $item): ?>
                         <tr>
                             <td><?php echo htmlspecialchars($item['item_name']); ?></td>
                             <td><?php echo htmlspecialchars($item['description'] ?? ''); ?></td>
@@ -265,6 +310,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
     border-radius: 4px;
 }
 
+/* Styles for child items */
+.child-item {
+    background-color: #f9f9f9;
+}
+
+.child-indent {
+    padding-left: 25px !important;
+}
+
 @media print {
     .invoice-actions,
     .payment-section {
@@ -277,4 +331,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
 }
 </style>
 
-<?php include 'footer.php'; ?> 
+<?php include 'footer.php'; ?>
