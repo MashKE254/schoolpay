@@ -20,26 +20,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
         $method = $_POST['method'];
         $memo = trim($_POST['memo']);
         
-        recordPayment($pdo, $invoice_id, $invoice['admission_no'], $payment_date, $amount, $method, $memo);
+        // Record payment using database balance
+        recordPayment($pdo, $invoice_id, $invoice['student_id'], $payment_date, $amount, $method, $memo);
         
-        // Update invoice status if fully paid
-        $total_paid = 0;
-        $stmt = $pdo->prepare("SELECT SUM(amount) as total FROM payments WHERE invoice_id = ?");
-        $stmt->execute([$invoice_id]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        $total_paid = floatval($result['total']);
-        
-        if ($total_paid >= $invoice['total_amount']) {
-            updateInvoiceStatus($pdo, $invoice_id, 'Paid');
-        }
-        
-        // Refresh the page
+        // Refresh to get updated balance
         header("Location: view_invoice.php?id=" . $invoice_id);
         exit;
     } catch (Exception $e) {
         $error = $e->getMessage();
     }
 }
+
+// Calculate balance from database values
+$stmt = $pdo->prepare("
+    SELECT COALESCE(SUM(amount), 0) 
+    FROM payments 
+    WHERE invoice_id = ?
+");
+$stmt->execute([$invoice_id]);
+$total_paid = $stmt->fetchColumn();
+
+$balance = $invoice['total_amount'] - $total_paid;
 ?>
 
 <div class="container">
@@ -73,7 +74,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                 <p>
                     Date: <?php echo date('M d, Y', strtotime($invoice['invoice_date'])); ?><br>
                     Due Date: <?php echo date('M d, Y', strtotime($invoice['due_date'])); ?><br>
-                    Status: <span class="status-<?php echo strtolower($invoice['status']); ?>"><?php echo $invoice['status']; ?></span>
+                    Status: <span class="status-<?php echo strtolower($invoice['status']); ?>"><?php echo $invoice['status']; ?></span><br>
+                    Total Amount: $<?php echo number_format($invoice['total_amount'], 2); ?><br>
+                    Paid Amount: $<?php echo number_format($invoice['paid_amount'], 2); ?><br>
+                    Balance Due: $<?php echo number_format($balance, 2); ?>
                 </p>
             </div>
         </div>
@@ -91,7 +95,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                 </thead>
                 <tbody>
                     <?php 
-                    // Group items by parent_id
                     $parentItems = [];
                     $childItems = [];
                     
@@ -99,14 +102,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                         if (empty($item['parent_id'])) {
                             $parentItems[$item['id']] = $item;
                         } else {
-                            if (!isset($childItems[$item['parent_id']])) {
-                                $childItems[$item['parent_id']] = [];
-                            }
                             $childItems[$item['parent_id']][] = $item;
                         }
                     }
                     
-                    // Display parent items and their children
                     foreach ($parentItems as $parentId => $item): ?>
                         <tr>
                             <td><?php echo htmlspecialchars($item['item_name']); ?></td>
@@ -116,7 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                             <td>$<?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?></td>
                         </tr>
                         
-                        <?php if (isset($childItems[$parentId])): ?>
+                        <?php if (!empty($childItems[$parentId])): ?>
                             <?php foreach ($childItems[$parentId] as $childItem): ?>
                                 <tr class="child-item">
                                     <td class="child-indent">- <?php echo htmlspecialchars($childItem['item_name']); ?></td>
@@ -128,27 +127,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
                             <?php endforeach; ?>
                         <?php endif; ?>
                     <?php endforeach; ?>
-                    
-                    <?php 
-                    // Display items without parent relationship if any
-                    $standalone_items = array_filter($invoice['items'], function($item) use ($parentItems, $childItems) {
-                        return !isset($parentItems[$item['id']]) && !in_array($item, array_merge(...array_values($childItems)));
-                    });
-                    
-                    foreach ($standalone_items as $item): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($item['item_name']); ?></td>
-                            <td><?php echo htmlspecialchars($item['description'] ?? ''); ?></td>
-                            <td><?php echo $item['quantity']; ?></td>
-                            <td>$<?php echo number_format($item['unit_price'], 2); ?></td>
-                            <td>$<?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
                 </tbody>
                 <tfoot>
                     <tr>
                         <td colspan="4" class="text-right"><strong>Total Amount:</strong></td>
-                        <td><strong>$<?php echo number_format($invoice['total_amount'] ?? 0, 2); ?></strong></td>
+                        <td><strong>$<?php echo number_format($invoice['total_amount'], 2); ?></strong></td>
+                    </tr>
+                    <tr>
+                        <td colspan="4" class="text-right"><strong>Amount Paid:</strong></td>
+                        <td><strong>$<?php echo number_format($invoice['paid_amount'], 2); ?></strong></td>
+                    </tr>
+                    <tr>
+                        <td colspan="4" class="text-right"><strong>Balance Due:</strong></td>
+                        <td><strong>$<?php echo number_format($balance, 2); ?></strong></td>
                     </tr>
                 </tfoot>
             </table>
@@ -162,19 +153,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
         <?php endif; ?>
     </div>
     
-    <?php if ($invoice['status'] !== 'Paid'): ?>
+    <?php if ($balance > 0): ?>
         <div class="payment-section">
             <h3>Record Payment</h3>
             <form method="post" class="payment-form">
                 <div class="form-row">
                     <div class="form-group">
                         <label for="payment_date">Payment Date</label>
-                        <input type="date" name="payment_date" id="payment_date" value="<?php echo date('Y-m-d'); ?>" required>
+                        <input type="date" name="payment_date" id="payment_date" 
+                               value="<?php echo date('Y-m-d'); ?>" required>
                     </div>
                     
                     <div class="form-group">
                         <label for="amount">Amount</label>
-                        <input type="number" name="amount" id="amount" step="0.01" max="<?php echo $invoice['total_amount'] ?? 0; ?>" required>
+                        <input type="number" name="amount" id="amount" step="0.01" 
+                               max="<?php echo $balance; ?>" 
+                               required>
                     </div>
                     
                     <div class="form-group">
@@ -269,7 +263,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
 .status-sent { color: #2196F3; }
 .status-paid { color: #4CAF50; }
 .status-overdue { color: #f44336; }
-.status-cancelled { color: #666; }
 
 .payment-section {
     margin-top: 30px;
@@ -279,38 +272,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
-.payment-form {
-    margin-top: 20px;
-}
-
-.form-row {
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-    margin-bottom: 15px;
-}
-
-.form-group {
-    flex: 1;
-    min-width: 200px;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: bold;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-}
-
-/* Styles for child items */
 .child-item {
     background-color: #f9f9f9;
 }
@@ -323,10 +284,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
     .invoice-actions,
     .payment-section {
         display: none;
-    }
-    
-    .invoice-details {
-        box-shadow: none;
     }
 }
 </style>

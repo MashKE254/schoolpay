@@ -422,7 +422,7 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
 .dashboard-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    gap: 20px;
+    gap: 70px;
 }
 
 .card {
@@ -619,16 +619,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     borderColor: 'rgba(244, 67, 54, 1)',
                     borderWidth: 1
                 },
-                {
-                    label: 'Balance',
-                    data: balanceData,
-                    type: 'line',
-                    fill: false,
-                    borderColor: 'rgba(33, 150, 243, 1)',
-                    tension: 0.1,
-                    borderWidth: 3,
-                    pointBackgroundColor: 'rgba(33, 150, 243, 1)'
-                }
+
             ]
         },
         options: {

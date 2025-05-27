@@ -1,5 +1,5 @@
 <?php
-// Start output buffering at the very beginning of the script
+// Start output buffering at the very beginning
 ob_start();
 
 require 'config.php';
@@ -33,8 +33,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createInvoice'])) {
         
         $invoice_id = createInvoice($pdo, $student_id, $invoice_date, $due_date, $items, $notes);
         
-        // Redirect to view invoice - this will now work because of output buffering
+        // Redirect to view invoice
         header("Location: view_invoice.php?id=" . $invoice_id);
+        // Flush the output buffer and end it
+        ob_end_flush();
         exit;
     } catch (Exception $e) {
         $error = $e->getMessage();
@@ -52,13 +54,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createItem'])) {
         
         $item_id = createItem($pdo, $name, $price, $description, $parent_id, $item_type);
         
-        // Get the parent item name if it's a child item
-        $parent_name = '';
-        if ($parent_id) {
-            $parent_stmt = $pdo->prepare("SELECT name FROM items WHERE id = ?");
-            $parent_stmt->execute([$parent_id]);
-            $parent_name = $parent_stmt->fetchColumn();
-        }
+        // Refresh the items list
+        $items = getItemsWithSubItems($pdo);
         
         // Return the new item's data as JSON
         header('Content-Type: application/json');
@@ -70,14 +67,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createItem'])) {
                 'price' => $price,
                 'description' => $description,
                 'parent_id' => $parent_id,
-                'parent_name' => $parent_name,
                 'item_type' => $item_type
             ]
         ]);
+        // Flush the output buffer and end it
+        ob_end_flush();
         exit;
     } catch (Exception $e) {
         header('Content-Type: application/json');
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        // Flush the output buffer and end it
+        ob_end_flush();
         exit;
     }
 }
@@ -407,19 +407,6 @@ optgroup option {
 </style>
 
 <script>
-function removeItem(button) {
-    const container = document.getElementById('items-container');
-    const row = button.closest('.item-row');
-    
-    // Only remove if there's more than one row
-    if (container.children.length > 1) {
-        container.removeChild(row);
-        updateTotals();
-    } else {
-        alert('At least one item is required');
-    }
-}
-
 function addItem() {
     const container = document.getElementById('items-container');
     const newRow = container.firstElementChild.cloneNode(true);
@@ -437,6 +424,19 @@ function addItem() {
     addItemEventListeners(newRow);
     
     updateTotals();
+}
+
+function removeItem(button) {
+    const row = button.closest('.item-row');
+    const container = document.getElementById('items-container');
+    
+    // Don't remove if it's the only row
+    if (container.children.length > 1) {
+        row.remove();
+        updateTotals();
+    } else {
+        alert("You must have at least one item.");
+    }
 }
 
 function addItemEventListeners(row) {
@@ -517,64 +517,55 @@ function createNewItem(event) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Add the new item to all dropdowns
-            document.querySelectorAll('.item-select').forEach(itemSelect => {
-                const newOption = document.createElement('option');
-                newOption.value = data.item.id;
-                
-                // Format the display text based on whether it's a parent or sub-item
-                let displayText = data.item.name;
-                if (data.item.parent_id) {
-                    // Find the parent item name
-                    displayText = data.item.parent_name + ' - ' + displayText;
-                }
-                displayText += ' ($' + parseFloat(data.item.price).toFixed(2) + ')';
-                
-                newOption.textContent = displayText;
-                newOption.dataset.price = data.item.price;
-                
-                // If it's a sub-item, add it to the appropriate optgroup
-                if (data.item.parent_id) {
-                    let optgroup = Array.from(itemSelect.querySelectorAll('optgroup')).find(
-                        og => og.label === data.item.parent_name
-                    );
-                    
-                    if (optgroup) {
-                        optgroup.appendChild(newOption);
-                    } else {
-                        // Create new optgroup if it doesn't exist
-                        const newOptgroup = document.createElement('optgroup');
-                        newOptgroup.label = data.item.parent_name;
-                        newOptgroup.appendChild(newOption);
-                        itemSelect.appendChild(newOptgroup);
-                    }
-                } else {
-                    // Insert before the first optgroup
-                    const firstOptgroup = itemSelect.querySelector('optgroup');
-                    if (firstOptgroup) {
-                        itemSelect.insertBefore(newOption, firstOptgroup);
-                    } else {
-                        itemSelect.appendChild(newOption);
-                    }
-                }
-            });
+            // Add the new item to the dropdown
+            const itemSelect = document.querySelector('.item-select');
+            const newOption = document.createElement('option');
+            newOption.value = data.item.id;
             
-            // Select the new item in the current row
-            const currentRow = document.querySelector('.item-row:last-child');
-            const currentSelect = currentRow.querySelector('.item-select');
-            currentSelect.value = data.item.id;
+            // Format the display text based on whether it's a parent or sub-item
+            let displayText = data.item.name;
+            if (data.item.parent_id) {
+                // Find the parent item name
+                const parentItem = Array.from(itemSelect.options).find(opt => 
+                    opt.value === data.item.parent_id.toString()
+                );
+                if (parentItem) {
+                    displayText = parentItem.text.split(' ($')[0] + ' - ' + displayText;
+                }
+            }
+            displayText += ' ($' + parseFloat(data.item.price).toFixed(2) + ')';
+            
+            newOption.textContent = displayText;
+            newOption.dataset.price = data.item.price;
+            
+            // If it's a sub-item, add it to the appropriate optgroup
+            if (data.item.parent_id) {
+                const optgroup = itemSelect.querySelector(`optgroup[label="${data.item.parent_name}"]`);
+                if (optgroup) {
+                    optgroup.appendChild(newOption);
+                } else {
+                    // Create new optgroup if it doesn't exist
+                    const newOptgroup = document.createElement('optgroup');
+                    newOptgroup.label = data.item.parent_name;
+                    newOptgroup.appendChild(newOption);
+                    itemSelect.appendChild(newOptgroup);
+                }
+            } else {
+                itemSelect.appendChild(newOption);
+            }
+            
+            // Select the new item
+            newOption.selected = true;
             
             // Update the price field
-            const priceInput = currentRow.querySelector('.unit-price');
+            const priceInput = document.querySelector('.unit-price');
             priceInput.value = data.item.price;
-            updateItemAmount(currentRow);
             
             // Close the modal
             closeNewItemModal();
             
-            // Reset the form
-            document.getElementById('newItemForm').reset();
-            toggleParentItem();
+            // Show success message
+            alert('Item created successfully!');
         } else {
             alert('Error creating item: ' + data.error);
         }
@@ -604,8 +595,9 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<?php 
-include 'footer.php'; 
-// Flush the output buffer and send all content to the browser
-ob_end_flush();
-?>
+<?php include 'footer.php'; ?>
+<?php
+// Flush the output buffer at the end if it hasn't been flushed yet
+if (ob_get_level() > 0) {
+    ob_end_flush();
+}

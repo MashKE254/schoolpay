@@ -95,7 +95,7 @@ if ($stmt->execute([$name, $email, $phone, $address, $student_id])) {
 }
 }
 
-// Process payment submission - Fixed code with student_id inclusion
+// Process payment submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['process_payment'])) {
     try {
         $student_id = intval($_POST['student_id']);
@@ -105,199 +105,298 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['process_payment'])) {
         $invoice_ids = $_POST['invoice_ids'] ?? [];
         $payment_amounts = $_POST['payment_amounts'] ?? [];
 
-        // Begin transaction
         $pdo->beginTransaction();
-        
-        for ($i = 0; $i < count($invoice_ids); $i++) {
-            $invoice_id = intval($invoice_ids[$i]);
-            $amount = floatval($payment_amounts[$i]);
-            
-            // Only process payments with amount > 0
+
+        foreach ($invoice_ids as $index => $invoice_id) {
+            $amount = floatval($payment_amounts[$index]);
+            $invoice_id = intval($invoice_id);
+
             if ($amount > 0) {
-                // Insert payment record - Added student_id to the insert statement
+                // Insert payment
                 $stmt = $pdo->prepare("INSERT INTO payments (invoice_id, student_id, payment_date, amount, payment_method, memo) 
                                        VALUES (?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$invoice_id, $student_id, $payment_date, $amount, $payment_method, $memo]);
+
             }
         }
-        
-        // Commit transaction
-        $pdo->commit();
-        
-        echo "<script>showAlert('Payment recorded successfully!');</script>";
 
-        // Refresh invoices list
-        $invoices = getInvoices($pdo);
-        
-    } catch (PDOException $e) {
-        // Roll back transaction on error
+        $pdo->commit();
+        echo "<script>showAlert('Payment recorded successfully!'); window.location.href = 'customer_center.php?view_student=' + $student_id;</script>";
+    } catch (Exception $e) {
         $pdo->rollBack();
-        echo "<script>showAlert('Error recording payment: " . addslashes($e->getMessage()) . "');</script>";
+        echo "<script>showAlert('Error: " . addslashes($e->getMessage()) . "');</script>";
     }
 }
 
-// Process statement generation (new functionality)
+// Process statement generation
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generateStatements'])) {
-$statementType = $_POST['statement_type'];
-$statementDate = $_POST['statement_date'];
-$studentSelection = $_POST['student_selection'];
-$dateFrom = $_POST['date_from'];
-$dateTo = $_POST['date_to'];
-$showTransactions = $_POST['show_transactions'];
+    try {
+        // Get form data
+        $statementType = $_POST['statement_type'];
+        $dateFrom = $_POST['date_from'];
+        $dateTo = $_POST['date_to'];
+        $studentSelection = $_POST['student_selection'];
+        $sortBy = $_POST['sort_by'];
+        $includeZero = isset($_POST['include_zero']);
+        $includeOverdue = isset($_POST['include_overdue']);
+        $includeMessage = isset($_POST['include_message']);
+        $statementMessage = $_POST['statement_message'];
+        $template = $_POST['template'];
 
-// Here you would implement the logic to generate statements
-// This is a placeholder for the actual implementation
-$success = "Statements generated successfully.";
+        // Get selected students
+        $studentIds = [];
+        if ($studentSelection === 'selected') {
+            $studentIds = $_POST['selected_students'] ?? [];
+        } elseif ($studentSelection === 'class') {
+            $classId = $_POST['class_id'];
+            $stmt = $pdo->prepare("SELECT id FROM students WHERE class_id = ?");
+            $stmt->execute([$classId]);
+            $studentIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } else { // All students
+            $stmt = $pdo->query("SELECT id FROM students");
+            $studentIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        }
+
+        if (empty($studentIds)) {
+            throw new Exception("No students selected");
+        }
+
+        // Get student data with balances
+        $students = [];
+        $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+        $sql = "SELECT 
+                    s.id,
+                    s.name,
+                    s.email,
+                    s.address,
+                    COALESCE(SUM(i.total_amount), 0) AS total_invoiced,
+                    COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+                    (COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(i.paid_amount), 0)) AS balance
+                FROM students s
+                LEFT JOIN invoices i ON s.id = i.student_id
+                WHERE s.id IN ($placeholders)
+                GROUP BY s.id";
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($studentIds);
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Apply filters
+        $filteredStudents = array_filter($students, function($student) use ($includeZero) {
+            if (!$includeZero && $student['balance'] == 0) return false;
+            return true;
+        });
+
+        // Sort students
+        usort($filteredStudents, function($a, $b) use ($sortBy) {
+            switch ($sortBy) {
+                case 'name': return strcmp($a['name'], $b['name']);
+                case 'id': return $a['id'] - $b['id'];
+                case 'balance': return $b['balance'] - $a['balance'];
+                default: return 0;
+            }
+        });
+
+        // Get transactions for each student
+        foreach ($filteredStudents as &$student) {
+            $stmt = $pdo->prepare("
+                SELECT 
+                    i.id AS invoice_id,
+                    i.invoice_date AS date,
+                    'invoice' AS type,
+                    i.total_amount AS amount,
+                    i.balance,
+                    NULL AS payment_method
+                FROM invoices i
+                WHERE i.student_id = ?
+                AND (i.invoice_date BETWEEN ? AND ?)
+                
+                UNION ALL
+                
+                SELECT 
+                    p.id AS payment_id,
+                    p.payment_date AS date,
+                    'payment' AS type,
+                    p.amount AS amount,
+                    NULL AS balance,
+                    p.payment_method
+                FROM payments p
+                WHERE p.student_id = ?
+                AND (p.payment_date BETWEEN ? AND ?)
+                ORDER BY date
+            ");
+
+            $stmt->execute([
+                $student['id'],
+                $dateFrom,
+                $dateTo,
+                $student['id'],
+                $dateFrom,
+                $dateTo
+            ]);
+            
+            $student['transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        // Generate HTML statement
+        ob_start();
+        include "templates/statement_$template.php";
+        $htmlContent = ob_get_clean();
+
+        // Output PDF or HTML
+        if ($_POST['action'] === 'download') {
+            require_once 'vendor/autoload.php';
+            $dompdf = new Dompdf\Dompdf();
+            $dompdf->loadHtml($htmlContent);
+            $dompdf->render();
+            $dompdf->stream("statements-".date('Ymd').".pdf");
+        } else {
+            echo $htmlContent;
+        }
+        exit();
+
+    } catch (Exception $e) {
+        $error = "Error generating statements: " . $e->getMessage();
+        echo "<script>showAlert('".addslashes($error)."');</script>";
+    }
 }
 
 // Get student detail if viewing single student
 $studentDetail = null;
 $studentTransactions = [];
 if (isset($_GET['view_student'])) {
-$studentId = intval($_GET['view_student']);
+    $studentId = intval($_GET['view_student']);
+    
+    // Get student details
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
+    $stmt->execute([$studentId]);
+    $studentDetail = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Replace the current transaction history building code in customer_center.php
-// Find this section around line 175-238
-
-// Get student details
-$stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
-$stmt->execute([$studentId]);
-$studentDetail = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if ($studentDetail) {
-    // Get student invoices with their original creation date
+    if ($studentDetail) {
+        // Replace the invoice query with:
     $stmt = $pdo->prepare("
         SELECT 
             i.id,
-            i.id as invoice_number,
+            i.id AS invoice_number,
             i.invoice_date,
             i.due_date,
             i.total_amount,
-            COALESCE(SUM(p.amount), 0) as paid_amount,
-            i.total_amount - COALESCE(SUM(p.amount), 0) as balance,
-            'Invoice' as transaction_type
-        FROM 
-            invoices i
-        LEFT JOIN 
-            payments p ON i.id = p.invoice_id
-        WHERE 
-            i.student_id = ?
-        GROUP BY 
-            i.id
+            i.paid_amount,
+            i.balance
+        FROM invoices i
+        WHERE i.student_id = ?
     ");
-    $stmt->execute([$studentId]);
-    $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    // Get student payments
-    $stmt = $pdo->prepare("
-        SELECT 
-            p.id,
-            p.payment_date as date,
-            p.amount,
-            p.payment_method,
-            p.memo,
-            i.id as invoice_number,
-            'Payment' as transaction_type
-        FROM 
-            payments p
-        JOIN 
-            invoices i ON p.invoice_id = i.id
-        WHERE 
-            i.student_id = ?
-        ORDER BY 
-            p.payment_date ASC
-    ");
-    $stmt->execute([$studentId]);
-    $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    // Create a combined timeline of all transactions
-    $allTransactions = [];
-    
-    // First, add all invoices
-    foreach ($invoices as $invoice) {
-        $allTransactions[] = [
-            'id' => $invoice['id'],
-            'date' => $invoice['invoice_date'],
-            'type' => 'invoice',
-            'description' => 'Invoice #' . $invoice['invoice_number'],
-            'amount' => $invoice['total_amount'],
-            'invoice_id' => $invoice['id'],
-            'due_date' => $invoice['due_date'],
-            // These will be calculated later
-            'running_balance' => 0,
-            'invoice_balance' => $invoice['total_amount']
-        ];
-    }
-    
-    // Then add all payments
-    foreach ($payments as $payment) {
-        $allTransactions[] = [
-            'id' => $payment['id'],
-            'date' => $payment['date'],
-            'type' => 'payment',
-            'description' => 'Payment for Invoice #' . $payment['invoice_number'] . ' (' . $payment['payment_method'] . ')',
-            'amount' => $payment['amount'],
-            'invoice_id' => $payment['invoice_number'],
-            'memo' => $payment['memo'],
-            // These will be calculated later
-            'running_balance' => 0,
-            'invoice_balance' => 0
-        ];
-    }
-    
-    // Sort all transactions by date (oldest first) to calculate running balances
-    usort($allTransactions, function($a, $b) {
-        $dateCompare = strtotime($a['date']) - strtotime($b['date']);
-        // If same date, put invoices before payments
-        if ($dateCompare === 0) {
-            return ($a['type'] === 'invoice') ? -1 : 1;
-        }
-        return $dateCompare;
-    });
-    
-    // Calculate running balances for each invoice
-    $invoiceBalances = [];
-    
-    // Initialize invoice balances
-    foreach ($invoices as $invoice) {
-        $invoiceBalances[$invoice['id']] = $invoice['total_amount'];
-    }
-    
-    // Calculate running balances for each transaction
-    foreach ($allTransactions as &$transaction) {
-        $invoiceId = $transaction['invoice_id'];
+        $stmt->execute([$studentId]);
+        $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        if ($transaction['type'] === 'payment') {
-            // Reduce the balance for this invoice
-            $invoiceBalances[$invoiceId] -= $transaction['amount'];
+        // Fetch payments
+        $stmt = $pdo->prepare("
+            SELECT 
+                p.id,
+                p.payment_date AS date,
+                p.amount,
+                p.payment_method,
+                p.memo,
+                p.invoice_id
+            FROM payments p
+            WHERE p.student_id = ?
+            ORDER BY p.payment_date ASC
+        ");
+        $stmt->execute([$studentId]);
+        $payments = $stmt->fetchAll(PDO::FETCH_ASSOC) ?? [];
+
+        // Build transaction history
+        $allTransactions = [];
+        foreach ($invoices as $invoice) {
+            $allTransactions[] = [
+                'id' => $invoice['id'] ?? 0,
+                'date' => $invoice['invoice_date'] ?? '',
+                'type' => 'invoice',
+                'description' => 'Invoice #' . ($invoice['invoice_number'] ?? ''),
+                'amount' => $invoice['total_amount'] ?? 0,
+                'invoice_balance' => $invoice['balance'] ?? 0
+            ];
         }
-        
-        // Store the current balance for this invoice
-        $transaction['invoice_balance'] = $invoiceBalances[$invoiceId];
-    }
-    
-    // Sort transactions by date (newest first) for display
-    usort($allTransactions, function($a, $b) {
-        return strtotime($b['date']) - strtotime($a['date']);
-    });
-    
-    $studentTransactions = $allTransactions;
-    
-    // Calculate student balance
-    $totalInvoiced = 0;
-    $totalPaid = 0;
-    
-    foreach ($studentTransactions as $trans) {
-        if ($trans['type'] === 'invoice') {
-            $totalInvoiced += $trans['amount'];
-        } elseif ($trans['type'] === 'payment') {
-            $totalPaid += $trans['amount'];
+        foreach ($payments as $payment) {
+            $allTransactions[] = [
+                'id' => $payment['id'] ?? 0,
+                'date' => $payment['date'] ?? '',
+                'type' => 'payment',
+                'description' => 'Payment for Invoice #' . ($payment['invoice_id'] ?? '') . ' (' . ($payment['payment_method'] ?? '') . ')',
+                'amount' => $payment['amount'] ?? 0
+            ];
         }
+
+        // Calculate balances
+        usort($allTransactions, function($a, $b) {
+            return strtotime($a['date']) - strtotime($b['date']);
+        });
+        $studentTransactions = $allTransactions;
+
+        // Initialize invoice balances using the calculated balances from the SQL query
+        $invoiceBalances = [];
+        foreach ($invoices as $invoice) {
+            $invoiceBalances[$invoice['id']] = $invoice['total_amount'];
+        }
+
+        // Calculate running balances for each transaction
+        $runningTotal = 0;
+        foreach ($allTransactions as &$transaction) {
+            $invoiceId = isset($transaction['invoice_id']) ? $transaction['invoice_id'] : (isset($transaction['id']) ? $transaction['id'] : null);
+
+            if ($transaction['type'] === 'invoice') {
+                $runningTotal += $transaction['amount'];
+            } else if ($transaction['type'] === 'payment') {
+                $runningTotal -= $transaction['amount'];
+                // Reduce the balance for this invoice
+                if (isset($invoiceBalances[$invoiceId])) {
+                    $invoiceBalances[$invoiceId] -= $transaction['amount'];
+                }
+            }
+
+            // Store the current balance for this invoice
+            $transaction['invoice_balance'] = isset($invoiceBalances[$invoiceId]) ? $invoiceBalances[$invoiceId] : 0;
+            $transaction['running_balance'] = $runningTotal;
+        }
+
+        // Sort transactions by date (newest first) for display
+        usort($allTransactions, function($a, $b) {
+            $dateCompare = strtotime($b['date']) - strtotime($a['date']);
+            // If same date, put invoices before payments
+            if ($dateCompare === 0) {
+                return ($a['type'] === 'invoice') ? -1 : 1;
+            }
+            return $dateCompare;
+        });
+
+        $studentTransactions = $allTransactions;
+        if (isset($_GET['view_student'])) {
+            $studentId = intval($_GET['view_student']);
+            // Re-fetch invoices and payments to get updated amounts
+            $stmt = $pdo->prepare("
+                SELECT 
+                    i.id,
+                    i.id AS invoice_number,
+                    i.invoice_date,
+                    i.due_date,
+                    i.total_amount,
+                    i.paid_amount,
+                    i.balance  -- Use the existing generated column
+                FROM invoices i
+                WHERE i.student_id = ?
+            ");
+            $stmt->execute([$studentId]);
+            $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Recalculate totals
+        $totalInvoiced = array_sum(array_column($invoices, 'total_amount'));
+        $totalPaid = array_sum(array_column($invoices, 'paid_amount'));
+        $studentBalance = $totalInvoiced - $totalPaid;
     }
-    
-    $studentBalance = $totalInvoiced - $totalPaid;
 }
 }
+
+
 
 // Retrieve existing invoices and students
 $invoices = getInvoices($pdo);
@@ -442,36 +541,35 @@ $students = getStudents($pdo);
         </tr>
     </thead>
     <tbody>
-        <?php foreach($studentTransactions as $trans): ?>
-        <tr class="transaction-row <?php echo $trans['type']; ?>">
-            <td><?php echo date('M d, Y', strtotime($trans['date'])); ?></td>
+        
+        <?php foreach ($studentTransactions as $trans): ?>
+        <tr>
+            <td><?= date('M d, Y', strtotime($trans['date'])) ?></td>
+            <td><?= ucfirst($trans['type']) ?></td>
             <td>
-                <?php if($trans['type'] === 'invoice'): ?>
-                    <span class="trans-tag invoice">Invoice</span>
+                <?php if ($trans['type'] === 'invoice'): ?>
+                    Invoice #<?= $trans['id'] ?? 'N/A' ?>
                 <?php else: ?>
-                    <span class="trans-tag payment">Payment</span>
+                    Payment for Invoice #<?= $trans['invoice_id'] ?? 'N/A' ?>
                 <?php endif; ?>
             </td>
-            <td><?php echo htmlspecialchars($trans['description']); ?></td>
-            <td class="amount <?php echo $trans['type'] === 'payment' ? 'payment-amount' : 'invoice-amount'; ?>">
-                $<?php echo number_format(abs($trans['amount']), 2); ?>
-            </td>
+            <td>$<?= number_format($trans['amount'] ?? 0, 2) ?></td>
             <td>
-                <?php if(isset($trans['invoice_balance'])): ?>
-                    $<?php echo number_format($trans['invoice_balance'], 2); ?>
+                <?php if ($trans['type'] === 'invoice'): ?>
+                    $<?= number_format($trans['invoice_balance'] ?? 0, 2) ?>
                 <?php else: ?>
                     -
                 <?php endif; ?>
             </td>
             <td>
-                <?php if($trans['type'] === 'invoice'): ?>
-                    <a href="view_invoice.php?id=<?php echo $trans['id']; ?>" class="btn-small">View</a>
-                <?php elseif($trans['type'] === 'payment'): ?>
-                    <button class="btn-small" onclick="viewPaymentDetail(<?php echo $trans['id']; ?>)">Detail</button>
+                <?php if ($trans['type'] === 'invoice'): ?>
+                    <a href="view_invoice.php?id=<?= $trans['id'] ?>" class="btn-small">View</a>
                 <?php endif; ?>
             </td>
         </tr>
         <?php endforeach; ?>
+    </tbody>
+</table>
     </tbody>
 </table>
     </div>
@@ -1419,50 +1517,44 @@ alert(message);
 }
 
 function loadUnpaidInvoices() {
-const studentId = document.getElementById('student_id').value;
-if (!studentId) {
-    document.getElementById('unpaidInvoicesTable').querySelector('tbody').innerHTML = '';
-    document.getElementById('totalPayment').textContent = '$0.00';
-    return;
-}
-
-// AJAX request to get unpaid invoices
-const xhr = new XMLHttpRequest();
-xhr.open('GET', 'get_unpaid_invoices.php?student_id=' + studentId, true);
-xhr.onload = function() {
-    if (this.status === 200) {
-        const invoices = JSON.parse(this.responseText);
-        let html = '';
-        
-        invoices.forEach(function(invoice) {
-            // Ensure proper number conversion and handle null/undefined values
-            const totalAmount = parseFloat(invoice.total_amount) || 0;
-            const paidAmount = parseFloat(invoice.paid_amount) || 0;
-            const balance = totalAmount - paidAmount;
-            
-            html += `
-                <tr>
-                    <td>${invoice.id}</td>
-                    <td>${formatDate(invoice.invoice_date)}</td>
-                    <td>${formatDate(invoice.due_date)}</td>
-                    <td>$${totalAmount.toFixed(2)}</td>
-                    <td>$${paidAmount.toFixed(2)}</td>
-                    <td>$${balance.toFixed(2)}</td>
-                    <td>
-                        <input type="hidden" name="invoice_ids[]" value="${invoice.id}">
-                        <input type="number" name="payment_amounts[]" class="payment-amount" 
-                                max="${balance}" min="0" step="0.01" value="0" 
-                                onchange="calculateTotal()">
-                    </td>
-                </tr>
-            `;
-        });
-        
-        document.getElementById('unpaidInvoicesTable').querySelector('tbody').innerHTML = html;
-        calculateTotal();
+    const studentId = document.getElementById('student_id').value;
+    if (!studentId) {
+        document.getElementById('unpaidInvoicesTable').querySelector('tbody').innerHTML = '';
+        document.getElementById('totalPayment').textContent = '$0.00';
+        return;
     }
-};
-xhr.send();
+
+    fetch(`get_unpaid_invoices.php?student_id=${studentId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const invoices = data.data;
+                let html = '';
+                invoices.forEach(invoice => {
+                    html += `
+                        <tr>
+                            <td>${invoice.id}</td>
+                            <td>${new Date(invoice.invoice_date).toLocaleDateString()}</td>
+                            <td>${new Date(invoice.due_date).toLocaleDateString()}</td>
+                            <td>$${invoice.total_amount.toFixed(2)}</td>
+                            <td>$${invoice.paid_amount.toFixed(2)}</td>
+                            <td>$${(invoice.total_amount - invoice.paid_amount).toFixed(2)}</td>
+                            <td>
+                                <input type="hidden" name="invoice_ids[]" value="${invoice.id}">
+                                <input type="number" name="payment_amounts[]" class="payment-amount" 
+                                       min="0" max="${(invoice.total_amount - invoice.paid_amount).toFixed(2)}" 
+                                       step="0.01" value="0" oninput="calculateTotal()">
+                            </td>
+                        </tr>
+                    `;
+                });
+                document.querySelector('#unpaidInvoicesTable tbody').innerHTML = html;
+                calculateTotal();
+            } else {
+                alert('Error loading invoices: ' + data.error);
+            }
+        })
+        .catch(error => console.error('Error:', error));
 }
 
 function calculateTotal() {
@@ -1507,19 +1599,46 @@ document.getElementById('statement_preview').innerHTML = '<h3 style="text-align:
 }
 
 function previewStatement() {
-// Here you would implement the preview functionality
-// This is a placeholder that would be replaced with actual preview code
-const statementType = document.getElementById('statement_type').value;
-const template = document.querySelector('input[name="template"]:checked').value;
+    const formData = new FormData(document.getElementById('statementForm'));
+    formData.append('action', 'preview');
 
-document.getElementById('statement_preview').innerHTML = `
-    <h3 style="text-align: center;">Statement Preview</h3>
-    <div style="text-align: center;">
-        <p>Sample ${statementType} statement using ${template} template</p>
-        <p>This is a preview of how your statement will look.</p>
-    </div>
-`;
+    fetch('customer_center.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.text())
+    .then(html => {
+        document.getElementById('statement_preview').innerHTML = html;
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('Error generating preview');
+    });
 }
+
+// Update form submission handler
+document.getElementById('statementForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const formData = new FormData(this);
+    formData.append('action', 'download');
+    
+    // Submit the form normally for PDF download
+    const newForm = document.createElement('form');
+    newForm.method = 'POST';
+    newForm.action = 'customer_center.php';
+    newForm.style.display = 'none';
+    
+    for (const [key, value] of formData) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = value;
+        newForm.appendChild(input);
+    }
+    
+    document.body.appendChild(newForm);
+    newForm.submit();
+});
 
 // Initialize the page
 document.addEventListener('DOMContentLoaded', function() {
@@ -1574,5 +1693,3 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
-
-<?php include 'footer.php'; ?>

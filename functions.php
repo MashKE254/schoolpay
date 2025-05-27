@@ -167,7 +167,8 @@ function getStudentInvoices($pdo, $student_id) {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Get invoice details
+// functions.php - Update the getInvoiceDetails function
+
 function getInvoiceDetails($pdo, $invoice_id) {
     try {
         // Get invoice details with student information
@@ -194,14 +195,8 @@ function getInvoiceDetails($pdo, $invoice_id) {
         $stmt->execute([$invoice_id]);
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        // Calculate total amount
-        $total_amount = 0;
-        foreach ($items as $item) {
-            $total_amount += $item['quantity'] * $item['unit_price'];
-        }
-        
+        // Assign items to the invoice (no total_amount recalculation)
         $invoice['items'] = $items;
-        $invoice['total_amount'] = $total_amount;
         
         return $invoice;
     } catch (PDOException $e) {
@@ -213,28 +208,21 @@ function getInvoiceDetails($pdo, $invoice_id) {
 // Get student transactions (invoices and payments)
 function getStudentTransactions($pdo, $student_id) {
     // Get invoices
-    $stmt = $pdo->prepare("
-        SELECT 
-            'invoice' as type,
-            id,
-            invoice_date as date,
-            total_amount as amount,
-            status,
-            NULL as payment_method
-        FROM invoices 
-        WHERE student_id = ?
-        UNION ALL
-        SELECT 
-            'payment' as type,
-            id,
-            payment_date as date,
-            amount,
-            'Paid' as status,
-            method as payment_method
-        FROM payments 
-        WHERE student_id = ?
-        ORDER BY date DESC
-    ");
+    // Update the payment query to:
+$stmt = $pdo->prepare("
+    SELECT 
+        p.id,
+        p.payment_date as date,
+        p.amount,
+        p.payment_method,
+        p.memo,
+        p.invoice_id,
+        i.id as invoice_number
+    FROM payments p
+    LEFT JOIN invoices i ON p.invoice_id = i.id
+    WHERE p.student_id = ?
+    ORDER BY p.payment_date ASC
+");
     $stmt->execute([$student_id, $student_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
@@ -417,16 +405,36 @@ function deleteItem($pdo, $id) {
 // Get unpaid invoices for a student
 function getUnpaidInvoices($pdo, $student_id) {
     $stmt = $pdo->prepare("
-        SELECT i.*, 
-               (SELECT SUM(amount) FROM payments WHERE invoice_id = i.id) as paid_amount,
-               (SELECT SUM(quantity * unit_price) FROM invoice_items WHERE invoice_id = i.id) as total_amount
+        SELECT 
+            i.id,
+            i.invoice_date,
+            i.due_date,
+            i.total_amount,
+            COALESCE(SUM(p.amount), 0) AS paid_amount,
+            (i.total_amount - COALESCE(SUM(p.amount), 0)) AS balance
         FROM invoices i
-        WHERE i.student_id = ? 
-        AND i.status != 'Paid'
-        ORDER BY i.due_date ASC
+        LEFT JOIN payments p ON p.invoice_id = i.id
+        WHERE i.student_id = ?
+        GROUP BY i.id
+        HAVING balance > 0
     ");
     $stmt->execute([$student_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getInvoiceBalance($pdo, $invoice_id) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT (total_amount - paid_amount) AS balance 
+            FROM invoices 
+            WHERE id = ?
+        ");
+        $stmt->execute([$invoice_id]);
+        return $stmt->fetchColumn();
+    } catch (PDOException $e) {
+        error_log("Error getting invoice balance: " . $e->getMessage());
+        return 0;
+    }
 }
 
 // Record a payment receipt
