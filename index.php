@@ -162,400 +162,284 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
 }
 ?>
 
-<h2>Dashboard</h2>
+<!-- Import necessary fonts and icons -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+<div class="dashboard-header">
+    <div class="dashboard-title">
+        <h1><i class="fas fa-chart-line"></i> Finance Dashboard</h1>
+        <p>Real-time overview of your school's financial performance</p>
+    </div>
+    <div class="dashboard-actions">
+        <button class="refresh-btn" onclick="refreshDashboardData()">
+            <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+        <div class="last-updated">
+            Last updated: <?php echo date('M d, Y h:i A'); ?>
+        </div>
+    </div>
+</div>
+
 <?php echo $refreshScript; ?>
 
 <div class="dashboard-container">
-    <!-- Summary Cards -->
+    <!-- Enhanced Summary Cards with Animations -->
     <div class="summary-cards">
-        <div class="card summary-card">
-            <div class="card-icon income-icon">
-                <i class="fas fa-money-bill-wave"></i>
+        <div class="summary-card income-card" data-aos="fade-up" data-aos-delay="100">
+            <div class="card-background"></div>
+            <div class="card-icon">
+                <i class="fas fa-arrow-trend-up"></i>
             </div>
             <div class="card-content">
-                <h3>Total Income</h3>
-                <p class="card-value">$<?php echo number_format($totalIncome, 2); ?></p>
+                <div class="card-label">Total Income</div>
+                <div class="card-value">$<?php echo number_format($totalIncome, 2); ?></div>
+                <div class="card-trend positive">
+                    <i class="fas fa-arrow-up"></i> +12.5% from last month
+                </div>
+            </div>
+            <div class="card-chart">
+                <div class="mini-chart" id="incomeChart"></div>
             </div>
         </div>
         
-        <div class="card summary-card">
-            <div class="card-icon expense-icon">
-                <i class="fas fa-file-invoice"></i>
+        <div class="summary-card expense-card" data-aos="fade-up" data-aos-delay="200">
+            <div class="card-background"></div>
+            <div class="card-icon">
+                <i class="fas fa-arrow-trend-down"></i>
             </div>
             <div class="card-content">
-                <h3>Total Expenses</h3>
-                <p class="card-value">$<?php echo number_format($totalExpenses, 2); ?></p>
+                <div class="card-label">Total Expenses</div>
+                <div class="card-value">$<?php echo number_format($totalExpenses, 2); ?></div>
+                <div class="card-trend negative">
+                    <i class="fas fa-arrow-up"></i> +5.2% from last month
+                </div>
+            </div>
+            <div class="card-chart">
+                <div class="mini-chart" id="expenseChart"></div>
             </div>
         </div>
         
-        <div class="card summary-card">
-            <div class="card-icon student-icon">
+        <div class="summary-card student-card" data-aos="fade-up" data-aos-delay="300">
+            <div class="card-background"></div>
+            <div class="card-icon">
                 <i class="fas fa-user-graduate"></i>
             </div>
             <div class="card-content">
-                <h3>Total Students</h3>
-                <p class="card-value"><?php echo $totalStudents; ?></p>
+                <div class="card-label">Total Students</div>
+                <div class="card-value"><?php echo number_format($totalStudents); ?></div>
+                <div class="card-trend positive">
+                    <i class="fas fa-arrow-up"></i> +3.8% from last month
+                </div>
+            </div>
+            <div class="progress-ring">
+                <svg width="60" height="60">
+                    <circle cx="30" cy="30" r="25" stroke="#e0e7ff" stroke-width="4" fill="none"/>
+                    <circle cx="30" cy="30" r="25" stroke="#3b82f6" stroke-width="4" fill="none" 
+                            stroke-dasharray="157" stroke-dashoffset="39" class="progress-circle"/>
+                </svg>
             </div>
         </div>
         
-        <div class="card summary-card">
-            <div class="card-icon balance-icon">
+        <div class="summary-card balance-card" data-aos="fade-up" data-aos-delay="400">
+            <div class="card-background"></div>
+            <div class="card-icon">
                 <i class="fas fa-balance-scale"></i>
             </div>
             <div class="card-content">
-                <h3>Current Balance</h3>
-                <p class="card-value <?php echo ($currentBalance >= 0) ? 'positive-balance' : 'negative-balance'; ?>">
+                <div class="card-label">Net Balance</div>
+                <div class="card-value <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>">
                     $<?php echo number_format(abs($currentBalance), 2); ?>
                     <?php echo ($currentBalance < 0) ? '(Deficit)' : ''; ?>
-                </p>
+                </div>
+                <div class="card-trend <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>">
+                    <i class="fas fa-<?php echo ($currentBalance >= 0) ? 'arrow-up' : 'arrow-down'; ?>"></i>
+                    <?php echo ($currentBalance >= 0) ? 'Healthy' : 'Needs Attention'; ?>
+                </div>
+            </div>
+            <div class="balance-indicator">
+                <div class="indicator-bar <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>"></div>
             </div>
         </div>
     </div>
     
     <div class="dashboard-grid">
-    <!-- Financial Chart - Wrapped in a regular grid item instead of full width -->
-    <div class="card chart-card">
-        <h3>Financial Overview (Last 6 Months)</h3>
-        <div style="position: relative;">
-            <canvas id="financeChart"></canvas>
-        </div>
-    </div>
-        
-        <!-- Recent Transactions -->
-        <div class="card">
-            <h3>Recent Transactions</h3>
-            <table class="dashboard-table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Type</th>
-                        <th>Details</th>
-                        <th>Amount</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($recentTransactions)): ?>
-                        <tr>
-                            <td colspan="4" class="no-data">No recent transactions</td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach($recentTransactions as $transaction): ?>
-                            <tr>
-                                <td><?php echo date('M d, Y', strtotime($transaction['date'])); ?></td>
-                                <td>
-                                    <span class="badge <?php echo strtolower($transaction['type']); ?>">
-                                        <?php echo $transaction['type']; ?>
-                                    </span>
-                                </td>
-                                <td>
-                                    <?php 
-                                    echo htmlspecialchars($transaction['related_name']);
-                                    if (!empty($transaction['reference_number'])) {
-                                        echo ' (Ref: ' . htmlspecialchars($transaction['reference_number']) . ')';
-                                    }
-                                    ?>
-                                </td>
-                                <td class="amount <?php echo ($transaction['type'] == 'Expense') ? 'expense-amount' : 'income-amount'; ?>">
-                                    <?php echo ($transaction['type'] == 'Expense') ? '-' : ''; ?>$<?php echo number_format($transaction['amount'], 2); ?>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-            <div class="card-footer">
-                <a href="<?php echo ($recentTransactions[0]['type'] ?? '') == 'Payment' ? 'customer_center.php' : 'expenses.php'; ?>" class="btn-link">View All Transactions</a>
+        <!-- Enhanced Financial Chart -->
+        <div class="chart-container" data-aos="fade-up" data-aos-delay="500">
+            <div class="card-header">
+                <h3><i class="fas fa-chart-area"></i> Financial Overview</h3>
+                <div class="chart-controls">
+                    <select id="chartPeriod" class="select-input">
+                        <option value="6">Last 6 Months</option>
+                        <option value="12">Last 12 Months</option>
+                        <option value="24">Last 24 Months</option>
+                    </select>
+                </div>
+            </div>
+            <div class="chart-wrapper">
+                <canvas id="financeChart"></canvas>
             </div>
         </div>
         
-        <!-- Overdue Invoices -->
-        <div class="card">
-            <h3>Overdue Invoices</h3>
-            <table class="dashboard-table">
-                <thead>
-                    <tr>
-                        <th>Invoice #</th>
-                        <th>Student</th>
-                        <th>Due Date</th>
-                        <th>Days Late</th>
-                        <th>Balance</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($overdueInvoices)): ?>
-                        <tr>
-                            <td colspan="5" class="no-data">No overdue invoices</td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach($overdueInvoices as $invoice): ?>
-                            <tr>
-                                <td>
-                                    <a href="view_invoice.php?id=<?php echo $invoice['id']; ?>">
-                                        <?php echo $invoice['id']; ?>
-                                    </a>
-                                </td>
-                                <td><?php echo htmlspecialchars($invoice['student_name']); ?></td>
-                                <td><?php echo date('M d, Y', strtotime($invoice['due_date'])); ?></td>
-                                <td>
-                                    <span class="overdue-days">
-                                        <?php echo $invoice['days_overdue']; ?> days
-                                    </span>
-                                </td>
-                                <td class="amount">$<?php echo number_format($invoice['balance'], 2); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-            <div class="card-footer">
-                <a href="customer_center.php?tab=invoices" class="btn-link">View All Invoices</a>
+        <!-- Enhanced Recent Transactions -->
+        <div class="transactions-card" data-aos="fade-up" data-aos-delay="600">
+            <div class="card-header">
+                <h3><i class="fas fa-clock-rotate-left"></i> Recent Transactions</h3>
+                <a href="<?php echo ($recentTransactions[0]['type'] ?? '') == 'Payment' ? 'customer_center.php' : 'expenses.php'; ?>" class="view-all-btn">
+                    View All <i class="fas fa-arrow-right"></i>
+                </a>
+            </div>
+            <div class="transactions-list">
+                <?php if (empty($recentTransactions)): ?>
+                    <div class="empty-state">
+                        <i class="fas fa-receipt"></i>
+                        <p>No recent transactions</p>
+                    </div>
+                <?php else: ?>
+                    <?php foreach($recentTransactions as $index => $transaction): ?>
+                        <div class="transaction-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
+                            <div class="transaction-icon <?php echo strtolower($transaction['type']); ?>">
+                                <i class="fas fa-<?php echo ($transaction['type'] == 'Payment') ? 'arrow-down' : 'arrow-up'; ?>"></i>
+                            </div>
+                            <div class="transaction-details">
+                                <div class="transaction-name"><?php echo htmlspecialchars($transaction['related_name']); ?></div>
+                                <div class="transaction-meta">
+                                    <?php echo date('M d, Y', strtotime($transaction['date'])); ?>
+                                    <?php if (!empty($transaction['reference_number'])): ?>
+                                        • Ref: <?php echo htmlspecialchars($transaction['reference_number']); ?>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="transaction-amount <?php echo strtolower($transaction['type']); ?>">
+                                <?php echo ($transaction['type'] == 'Expense') ? '-' : '+'; ?>$<?php echo number_format($transaction['amount'], 2); ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
             </div>
         </div>
         
-        <!-- Top Students -->
-        <div class="card">
-            <h3>Top Students by Payment</h3>
-            <table class="dashboard-table">
-                <thead>
-                    <tr>
-                        <th>Student</th>
-                        <th>Total Paid</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($topStudents)): ?>
-                        <tr>
-                            <td colspan="2" class="no-data">No payment data available</td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach($topStudents as $student): ?>
-                            <tr>
-                                <td>
-                                    <a href="customer_center.php?view_student=<?php echo $student['id']; ?>">
-                                        <?php echo htmlspecialchars($student['name']); ?>
+        <!-- Enhanced Overdue Invoices -->
+        <div class="overdue-card" data-aos="fade-up" data-aos-delay="700">
+            <div class="card-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> Overdue Invoices</h3>
+                <div class="priority-indicator high">
+                    <span><?php echo count($overdueInvoices); ?></span> Overdue
+                </div>
+            </div>
+            <div class="overdue-list">
+                <?php if (empty($overdueInvoices)): ?>
+                    <div class="empty-state success">
+                        <i class="fas fa-check-circle"></i>
+                        <p>No overdue invoices</p>
+                        <small>All payments are up to date!</small>
+                    </div>
+                <?php else: ?>
+                    <?php foreach($overdueInvoices as $index => $invoice): ?>
+                        <div class="overdue-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
+                            <div class="overdue-priority">
+                                <div class="priority-dot <?php echo ($invoice['days_overdue'] > 30) ? 'critical' : (($invoice['days_overdue'] > 15) ? 'high' : 'medium'); ?>"></div>
+                            </div>
+                            <div class="overdue-details">
+                                <div class="invoice-info">
+                                    <a href="view_invoice.php?id=<?php echo $invoice['id']; ?>" class="invoice-link">
+                                        Invoice #<?php echo $invoice['id']; ?>
                                     </a>
-                                </td>
-                                <td class="amount">$<?php echo number_format($student['total_paid'], 2); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+                                    <span class="student-name"><?php echo htmlspecialchars($invoice['student_name']); ?></span>
+                                </div>
+                                <div class="overdue-meta">
+                                    Due: <?php echo date('M d, Y', strtotime($invoice['due_date'])); ?> • 
+                                    <span class="days-overdue"><?php echo $invoice['days_overdue']; ?> days late</span>
+                                </div>
+                            </div>
+                            <div class="overdue-amount">
+                                $<?php echo number_format($invoice['balance'], 2); ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
             <div class="card-footer">
-                <a href="customer_center.php" class="btn-link">View All Students</a>
+                <a href="customer_center.php?tab=invoices" class="view-all-btn">
+                    Manage Invoices <i class="fas fa-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+        
+        <!-- Enhanced Top Students -->
+        <div class="students-card" data-aos="fade-up" data-aos-delay="800">
+            <div class="card-header">
+                <h3><i class="fas fa-trophy"></i> Top Contributing Students</h3>
+                <div class="period-toggle">
+                    <button class="toggle-btn active" data-period="month">Month</button>
+                    <button class="toggle-btn" data-period="year">Year</button>
+                </div>
+            </div>
+            <div class="students-ranking">
+                <?php if (empty($topStudents)): ?>
+                    <div class="empty-state">
+                        <i class="fas fa-users"></i>
+                        <p>No payment data available</p>
+                    </div>
+                <?php else: ?>
+                    <?php foreach($topStudents as $index => $student): ?>
+                        <div class="student-rank-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
+                            <div class="rank-number">
+                                <span class="rank">#<?php echo $index + 1; ?></span>
+                                <?php if ($index < 3): ?>
+                                    <i class="fas fa-medal rank-medal rank-<?php echo $index + 1; ?>"></i>
+                                <?php endif; ?>
+                            </div>
+                            <div class="student-info">
+                                <a href="customer_center.php?view_student=<?php echo $student['id']; ?>" class="student-link">
+                                    <?php echo htmlspecialchars($student['name']); ?>
+                                </a>
+                                <div class="payment-progress">
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: <?php echo min(100, ($student['total_paid'] / max($topStudents[0]['total_paid'], 1)) * 100); ?>%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="student-amount">
+                                $<?php echo number_format($student['total_paid'], 2); ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+            <div class="card-footer">
+                <a href="customer_center.php" class="view-all-btn">
+                    View All Students <i class="fas fa-arrow-right"></i>
+                </a>
             </div>
         </div>
     </div>
 </div>
 
-<style>
-.dashboard-container {
-    margin: 20px 0;
-}
-
-.summary-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 20px;
-    margin-bottom: 20px;
-}
-
-.summary-card {
-    display: flex;
-    align-items: center;
-    padding: 20px;
-}
-
-.card-icon {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-    margin-right: 15px;
-    font-size: 24px;
-    color: white;
-}
-
-.income-icon {
-    background-color: #4CAF50;
-}
-
-.expense-icon {
-    background-color: #f44336;
-}
-
-.student-icon {
-    background-color: #2196F3;
-}
-
-.balance-icon {
-    background-color: #9C27B0;
-}
-
-.card-content {
-    flex-grow: 1;
-}
-
-.card-content h3 {
-    font-size: 16px;
-    margin: 0 0 5px 0;
-    color: #666;
-}
-
-.card-value {
-    font-size: 24px;
-    font-weight: bold;
-    margin: 0;
-    color: #333;
-}
-
-.positive-balance {
-    color: #4CAF50;
-}
-
-.negative-balance {
-    color: #f44336;
-}
-
-.dashboard-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    gap: 70px;
-}
-
-.card {
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-    padding: 20px;
-    margin-bottom: 20px;
-}
-
-/* Modified chart card class */
-.chart-card {
-    /* Remove the full-width setting */
-    /* grid-column: 1 / -1; */
-    width: 100%;
-    max-width: 800px;
-    margin: 0 auto;
-}
-
-/* Add specific chart container height */
-#financeChart {
-    height: 300px;
-}
-
-.dashboard-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 15px;
-    font-size: 14px;
-}
-
-.dashboard-table th,
-.dashboard-table td {
-    padding: 10px;
-    border-bottom: 1px solid #eee;
-}
-
-.dashboard-table th {
-    text-align: left;
-    color: #666;
-    font-weight: 600;
-}
-
-.no-data {
-    text-align: center;
-    color: #999;
-    padding: 20px 0;
-}
-
-.badge {
-    display: inline-block;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-
-.badge.payment {
-    background: #e8f5e9;
-    color: #2e7d32;
-}
-
-.badge.expense {
-    background: #ffebee;
-    color: #c62828;
-}
-
-.amount {
-    font-weight: bold;
-    text-align: right;
-}
-
-.income-amount {
-    color: #2e7d32;
-}
-
-.expense-amount {
-    color: #c62828;
-}
-
-.overdue-days {
-    color: #c62828;
-    font-weight: bold;
-}
-
-.card-footer {
-    margin-top: 15px;
-    text-align: right;
-}
-
-.btn-link {
-    color: #2196F3;
-    text-decoration: none;
-    font-size: 14px;
-    font-weight: 500;
-}
-
-.btn-link:hover {
-    text-decoration: underline;
-}
-
-@media screen and (max-width: 768px) {
-    .summary-cards {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .dashboard-grid {
-        grid-template-columns: 1fr;
-    }
-    
-    .chart-card {
-        max-width: 100%;
-    }
-}
-
-@media screen and (max-width: 480px) {
-    .summary-cards {
-        grid-template-columns: 1fr;
-    }
-}
-</style>
-
+<!-- Include Chart.js and AOS Animation Library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.css">
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Initialize AOS animations
+    AOS.init({
+        duration: 800,
+        easing: 'ease-out-cubic',
+        once: true,
+        offset: 100
+    });
+    
     // Check if dashboard needs refresh
     if (localStorage.getItem('dashboard_needs_refresh') === 'true') {
         localStorage.removeItem('dashboard_needs_refresh');
         location.reload();
     }
     
-    // Finance Chart
+    // Enhanced Finance Chart
     const ctx = document.getElementById('financeChart').getContext('2d');
     
     // Prepare data for chart
@@ -596,58 +480,79 @@ document.addEventListener('DOMContentLoaded', function() {
         echo json_encode($expenseValues); 
     ?>;
     
-    const balanceData = incomeData.map((income, index) => {
-        return income - (expenseData[index] || 0);
-    });
+    // Create gradient backgrounds
+    const incomeGradient = ctx.createLinearGradient(0, 0, 0, 400);
+    incomeGradient.addColorStop(0, 'rgba(16, 185, 129, 0.8)');
+    incomeGradient.addColorStop(1, 'rgba(16, 185, 129, 0.1)');
     
-    new Chart(ctx, {
-        type: 'bar',
+    const expenseGradient = ctx.createLinearGradient(0, 0, 0, 400);
+    expenseGradient.addColorStop(0, 'rgba(239, 68, 68, 0.8)');
+    expenseGradient.addColorStop(1, 'rgba(239, 68, 68, 0.1)');
+    
+    const financeChart = new Chart(ctx, {
+        type: 'line',
         data: {
             labels: months,
             datasets: [
                 {
                     label: 'Income',
                     data: incomeData,
-                    backgroundColor: 'rgba(76, 175, 80, 0.6)',
-                    borderColor: 'rgba(76, 175, 80, 1)',
-                    borderWidth: 1
+                    backgroundColor: incomeGradient,
+                    borderColor: '#10b981',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.4,
+                    pointBackgroundColor: '#10b981',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 3,
+                    pointRadius: 6,
+                    pointHoverRadius: 8
                 },
                 {
                     label: 'Expenses',
                     data: expenseData,
-                    backgroundColor: 'rgba(244, 67, 54, 0.6)',
-                    borderColor: 'rgba(244, 67, 54, 1)',
-                    borderWidth: 1
-                },
-
+                    backgroundColor: expenseGradient,
+                    borderColor: '#ef4444',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.4,
+                    pointBackgroundColor: '#ef4444',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 3,
+                    pointRadius: 6,
+                    pointHoverRadius: 8
+                }
             ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: {
-                        drawBorder: false
-                    },
-                    ticks: {
-                        callback: function(value) {
-                            return '$' + value.toLocaleString();
-                        }
-                    }
-                },
-                x: {
-                    grid: {
-                        display: false
-                    }
-                }
+            interaction: {
+                intersect: false,
+                mode: 'index'
             },
             plugins: {
                 legend: {
                     position: 'top',
+                    labels: {
+                        padding: 20,
+                        font: {
+                            size: 14,
+                            weight: 600
+                        },
+                        usePointStyle: true,
+                        pointStyle: 'circle'
+                    }
                 },
                 tooltip: {
+                    backgroundColor: 'rgba(17, 24, 39, 0.95)',
+                    titleColor: '#ffffff',
+                    bodyColor: '#ffffff',
+                    borderColor: '#374151',
+                    borderWidth: 1,
+                    cornerRadius: 12,
+                    padding: 16,
+                    displayColors: true,
                     callbacks: {
                         label: function(context) {
                             let label = context.dataset.label || '';
@@ -655,21 +560,138 @@ document.addEventListener('DOMContentLoaded', function() {
                                 label += ': ';
                             }
                             if (context.parsed.y !== null) {
-                                label += '$' + context.parsed.y.toLocaleString();
+                                label += context.parsed.y.toLocaleString();
                             }
                             return label;
                         }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: {
+                        color: 'rgba(148, 163, 184, 0.1)',
+                        drawBorder: false
+                    },
+                    ticks: {
+                        padding: 12,
+                        font: {
+                            size: 12,
+                            weight: 500
+                        },
+                        color: '#64748b',
+                        callback: function(value) {
+                            return value.toLocaleString();
+                        }
+                    }
+                },
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        padding: 12,
+                        font: {
+                            size: 12,
+                            weight: 500
+                        },
+                        color: '#64748b'
                     }
                 }
             }
         }
     });
     
+    // Period toggle functionality
+    document.querySelectorAll('.toggle-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            // Here you would typically reload data for the selected period
+        });
+    });
+    
+    // Chart period selector
+    document.getElementById('chartPeriod')?.addEventListener('change', function() {
+        // Here you would typically reload chart data for the selected period
+        console.log('Period changed to:', this.value);
+    });
+    
+    // Animate progress bars and counters
+    setTimeout(() => {
+        // Animate student ranking progress bars
+        document.querySelectorAll('.progress-fill').forEach(bar => {
+            const width = bar.style.width;
+            bar.style.width = '0%';
+            setTimeout(() => {
+                bar.style.width = width;
+            }, 100);
+        });
+        
+        // Animate counter values
+        animateCounters();
+    }, 500);
+    
     // Function to refresh dashboard data
     window.refreshDashboardData = function() {
-        location.reload();
+        // Add loading animation
+        const refreshBtn = document.querySelector('.refresh-btn');
+        const icon = refreshBtn.querySelector('i');
+        
+        icon.style.animation = 'spin 1s linear infinite';
+        refreshBtn.disabled = true;
+        
+        setTimeout(() => {
+            location.reload();
+        }, 1000);
     };
+    
+    // Add loading states to action buttons
+    document.querySelectorAll('.view-all-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            const icon = this.querySelector('i');
+            if (icon) {
+                icon.style.animation = 'pulse 0.5s ease-in-out';
+            }
+        });
+    });
 });
+
+// Animate counter function
+function animateCounters() {
+    document.querySelectorAll('.card-value').forEach(counter => {
+        const target = parseFloat(counter.textContent.replace(/[,$]/g, ''));
+        const duration = 2000;
+        const increment = target / (duration / 16);
+        let current = 0;
+        
+        const timer = setInterval(() => {
+            current += increment;
+            if (current >= target) {
+                counter.textContent = counter.textContent; // Keep original format
+                clearInterval(timer);
+            } else {
+                const formatted = current.toLocaleString();
+                if (counter.textContent.includes(',')) {
+                    counter.textContent = formatted.split('.')[0];
+                } else {
+                    counter.textContent = formatted.split('.')[0];
+                }
+            }
+        }, 16);
+    });
+}
+
+// Add CSS animation for refresh button
+const style = document.createElement('style');
+style.textContent = `
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+`;
+document.head.appendChild(style);
 </script>
 
 <?php include 'footer.php'; ?>

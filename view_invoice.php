@@ -31,16 +31,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recordPayment'])) {
     }
 }
 
-// Calculate balance from database values
-$stmt = $pdo->prepare("
-    SELECT COALESCE(SUM(amount), 0) 
-    FROM payments 
-    WHERE invoice_id = ?
-");
+// Calculate balance
+$stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE invoice_id = ?");
 $stmt->execute([$invoice_id]);
 $total_paid = $stmt->fetchColumn();
-
 $balance = $invoice['total_amount'] - $total_paid;
+
+// Render invoice template
+$standalone = false;
+include 'invoice_template.php';
 ?>
 
 <div class="container">

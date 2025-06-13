@@ -484,30 +484,16 @@ function recordPaymentReceipt($pdo, $student_id, $payment_date, $amount, $method
 }
 
 // Get payment receipt details
-function getPaymentReceipt($pdo, $receipt_id) {
+function getAllReceipts($pdo) {
     $stmt = $pdo->prepare("
-        SELECT pr.*, s.name as student_name, s.email, s.phone
-        FROM payment_receipts pr
-        JOIN students s ON pr.student_id = s.id
-        WHERE pr.id = ?
+        SELECT r.*, s.name AS student_name 
+        FROM payment_receipts r
+        JOIN students s ON s.id = r.student_id
+        ORDER BY r.payment_date DESC
     ");
-    $stmt->execute([$receipt_id]);
-    $receipt = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($receipt) {
-        $stmt = $pdo->prepare("
-            SELECT p.*, i.invoice_date, i.due_date
-            FROM payments p
-            JOIN invoices i ON p.invoice_id = i.id
-            WHERE p.receipt_id = ?
-        ");
-        $stmt->execute([$receipt_id]);
-        $receipt['payments'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-    
-    return $receipt;
+    $stmt->execute();
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
-
 function createJournalEntry($pdo, $date, $debit_account, $credit_account, $amount, $description = '') {
     try {
         $stmt = $pdo->prepare("

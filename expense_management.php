@@ -39,6 +39,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
+// Handle account edit
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_account') {
+    $id = $_POST['id'];
+    $account_code = $_POST['account_code'];
+    $account_name = $_POST['account_name'];
+    $account_type = $_POST['account_type'];
+    
+    // Check if new code exists for other accounts
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM accounts WHERE account_code = ? AND id != ?");
+    $stmt->execute([$account_code, $id]);
+    if ($stmt->fetchColumn() > 0) {
+        $error_messages[] = "Account code already exists for another account";
+    }
+
+    if (empty($error_messages)) {
+        try {
+            $stmt = $pdo->prepare("UPDATE accounts SET account_code = ?, account_name = ?, account_type = ? WHERE id = ?");
+            $stmt->execute([$account_code, $account_name, $account_type, $id]);
+            $success_message = "Account updated successfully!";
+        } catch (PDOException $e) {
+            $error_messages[] = "Database error: " . $e->getMessage();
+        }
+    }
+}
+
+// Handle account deletion
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_account') {
+    $id = $_POST['id'];
+    
+    try {
+        // Check if account has transactions
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM expenses WHERE account_id = ?");
+        $stmt->execute([$id]);
+        if ($stmt->fetchColumn() > 0) {
+            $error_messages[] = "Cannot delete account with existing transactions";
+        } else {
+            $stmt = $pdo->prepare("DELETE FROM accounts WHERE id = ?");
+            $stmt->execute([$id]);
+            $success_message = "Account deleted successfully!";
+        }
+    } catch (PDOException $e) {
+        $error_messages[] = "Database error: " . $e->getMessage();
+    }
+}
+
 // Get all accounts (do this after handling the form to show newly added accounts)
 $accounts = $pdo->query("SELECT * FROM accounts ORDER BY account_code ASC")->fetchAll(PDO::FETCH_ASSOC);
 
@@ -70,327 +115,6 @@ include 'header.php';
 <head>
     <meta charset="UTF-8">
     <title>School Financial Management System</title>
-
-    <style>
-    /* Global Styles */
-:root {
-  --primary-color: #4a6fa5;
-  --primary-light: #6789bd;
-  --primary-dark: #365785;
-  --secondary-color: #67a57f;
-  --danger-color: #d9534f;
-  --warning-color: #f0ad4e;
-  --success-color: #5cb85c;
-  --gray-light: #f8f9fa;
-  --gray: #e9ecef;
-  --gray-dark: #343a40;
-  --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  --border-radius: 8px;
-}
-
-body {
-  font-family: 'Roboto', 'Segoe UI', sans-serif;
-  line-height: 1.6;
-  color: #333;
-  background-color: #f5f7fa;
-  margin: 0;
-  padding: 0;
-}
-
-h2 {
-  color: var(--primary-dark);
-  margin: 1.5rem 0;
-  font-weight: 600;
-  font-size: 2rem;
-  text-align: center;
-  position: relative;
-  padding-bottom: 10px;
-}
-
-h2:after {
-  content: '';
-  position: absolute;
-  width: 80px;
-  height: 3px;
-  background-color: var(--primary-color);
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* Tab Container and Navigation */
-.tab-nav {
-  display: flex;
-  background-color: var(--gray-light);
-  border-bottom: 1px solid var(--gray);
-  margin-bottom: 20px;
-}
-
-.tab-nav button {
-  padding: 15px 25px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  font-weight: 500;
-  color: var(--gray-dark);
-  transition: all 0.3s ease;
-  flex: 1;
-  text-align: center;
-  border-bottom: 3px solid transparent;
-  border-radius: 0;
-  margin-right: 0;
-}
-
-.tab-nav button:hover {
-  background-color: rgba(74, 111, 165, 0.1);
-  color: var(--primary-color);
-}
-
-.tab-nav button.active {
-  color: var(--primary-color);
-  border-bottom: 3px solid var(--primary-color);
-  background-color: white;
-}
-
-/* Tab Content */
-.tab {
-  display: none;
-  padding: 20px;
-  background-color: white;
-  border-radius: var(--border-radius);
-  box-shadow: var(--shadow);
-  animation: fadeIn 0.5s ease;
-  border: none;
-}
-
-.tab.active {
-  display: block;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-/* Form Styling */
-.form-group {
-  margin-bottom: 1.25rem;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 500;
-  color: var(--gray-dark);
-}
-
-input, select, textarea {
-  width: 100%;
-  padding: 12px;
-  border: 1px solid var(--gray);
-  border-radius: var(--border-radius);
-  font-size: 1rem;
-  transition: border 0.3s ease, box-shadow 0.3s ease;
-  box-sizing: border-box;
-}
-
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--primary-light);
-  box-shadow: 0 0 0 3px rgba(74, 111, 165, 0.2);
-}
-
-/* Button Styling */
-button {
-  padding: 12px 20px;
-  border: none;
-  border-radius: var(--border-radius);
-  cursor: pointer;
-  font-size: 1rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-  background-color: var(--primary-color);
-  color: white;
-}
-
-button:hover {
-  background-color: var(--primary-dark);
-}
-
-button[type="submit"] {
-  background-color: var(--success-color);
-  color: white;
-  width: auto;
-  padding: 12px 24px;
-  margin-top: 10px;
-  display: inline-block;
-}
-
-button[type="submit"]:hover {
-  background-color: #4cae4c;
-}
-
-button[type="button"] {
-  background-color: var(--secondary-color);
-  color: white;
-  margin-bottom: 15px;
-}
-
-button[type="button"]:hover {
-  background-color: #528c66;
-}
-
-/* Table Styling */
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 20px;
-  font-size: 0.95rem;
-  box-shadow: var(--shadow);
-  border-radius: var(--border-radius);
-  overflow: hidden;
-}
-
-th, td {
-  padding: 12px 15px;
-  text-align: left;
-  border-bottom: 1px solid var(--gray);
-}
-
-th {
-  background-color: var(--gray-light);
-  color: var(--primary-dark);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-tr:hover {
-  background-color: rgba(74, 111, 165, 0.05);
-}
-
-.total-row {
-  font-weight: bold;
-  background-color: var(--gray-light);
-  padding: 10px;
-  border-radius: var(--border-radius);
-  margin: 15px 0;
-  text-align: right;
-}
-
-/* Journal Entry Specific Styling */
-.journal-line {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 10px;
-  align-items: center;
-}
-
-/* Alert/Error Styling */
-.error {
-  color: var(--danger-color);
-  margin-top: 5px;
-  font-size: 0.9rem;
-}
-
-.success-message {
-  background-color: var(--success-color);
-  color: white;
-  padding: 10px;
-  border-radius: var(--border-radius);
-  margin-bottom: 15px;
-}
-
-.error-message {
-  background-color: var(--danger-color);
-  color: white;
-  padding: 10px;
-  border-radius: var(--border-radius);
-  margin-bottom: 15px;
-}
-
-/* Add Account Form */
-.add-account-section {
-  margin-bottom: 30px;
-  border: 1px solid var(--gray);
-  padding: 20px;
-  border-radius: var(--border-radius);
-  background-color: var(--gray-light);
-}
-
-.toggle-form {
-  margin-bottom: 15px;
-}
-
-.account-form {
-  display: none;
-}
-
-.account-form.show {
-  display: block;
-}
-
-/* Transaction History Specific Styling */
-.transaction-credit {
-  color: var(--success-color);
-  font-weight: 600;
-}
-
-.transaction-debit {
-  color: var(--danger-color);
-  font-weight: 600;
-}
-
-/* Filter controls */
-.filter-controls {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-
-.filter-controls .form-group {
-  flex: 1;
-  min-width: 200px;
-  margin-bottom: 0;
-}
-
-.search-box {
-  margin-bottom: 20px;
-}
-
-/* Responsive Design */
-@media (max-width: 768px) {
-  .tab-nav {
-    flex-direction: column;
-  }
-  
-  .tab-nav button {
-    width: 100%;
-  }
-  
-  table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-  }
-  
-  button {
-    display: block;
-    width: 100%;
-    margin-bottom: 10px;
-  }
-  
-  .journal-line {
-    grid-template-columns: 1fr;
-  }
-
-  .filter-controls {
-    flex-direction: column;
-  }
-}
-</style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -445,14 +169,14 @@ tr:hover {
                     <div class="form-group">
                         <label for="account_type">Account Type</label>
                         <select id="account_type" name="account_type" required>
-                            <option value="Assets">Assets</option>
-                            <option value="Liabilities">Liabilities</option>
-                            <option value="Equity">Equity</option>
-                            <option value="Revenue">Revenue</option>
-                            <option value="Expenses">Expenses</option>
+                            <option value="Assets" <?= isset($_POST['account_type']) && $_POST['account_type'] === 'Assets' ? 'selected' : '' ?>>Assets</option>
+                            <option value="Liabilities" <?= isset($_POST['account_type']) && $_POST['account_type'] === 'Liabilities' ? 'selected' : '' ?>>Liabilities</option>
+                            <option value="Equity" <?= isset($_POST['account_type']) && $_POST['account_type'] === 'Equity' ? 'selected' : '' ?>>Equity</option>
+                            <option value="Revenue" <?= isset($_POST['account_type']) && $_POST['account_type'] === 'Revenue' ? 'selected' : '' ?>>Revenue</option>
+                            <option value="Expenses" <?= isset($_POST['account_type']) && $_POST['account_type'] === 'Expenses' ? 'selected' : '' ?>>Expenses</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                                        <div class="form-group">
                         <label for="opening_balance">Opening Balance</label>
                         <input type="number" id="opening_balance" name="opening_balance" step="0.01" value="0.00">
                     </div>
@@ -500,6 +224,8 @@ tr:hover {
                     <td class="transaction-credit"><?= number_format($totalCredit, 2) ?></td>
                     <td><?= number_format($account['balance'], 2) ?></td>
                     <td><button onclick="viewAccountTransactions(<?= $account['id'] ?>)"><i class="fas fa-eye"></i> View</button></td>
+                    <td><button class="btn-edit"onclick="openEditModal(<?= $account['id'] ?>)"><i class="fas fa-edit"></i> Edit</button></td>
+                    <td><button class="btn-delete" onclick="confirmDelete(<?= $account['id'] ?>)"><i class="fas fa-trash"></i> Delete</button></td>
                 </tr>
                 <?php endforeach; ?>
             <?php endif; ?>
@@ -731,6 +457,41 @@ function openTab(tabName) {
 function toggleAccountForm() {
     const form = document.getElementById('accountForm');
     form.classList.toggle('show');
+}
+
+// Edit Account Modal
+function openEditModal(id) {
+    // Fetch account details
+    fetch(`get_account.php?id=${id}`)
+    .then(response => response.json())
+    .then(account => {
+        document.getElementById('edit_id').value = account.id;
+        document.getElementById('edit_code').value = account.account_code;
+        document.getElementById('edit_name').value = account.account_name;
+        document.getElementById('edit_type').value = account.account_type;
+        document.getElementById('editModal').style.display = 'block';
+    });
+}
+
+function closeEditModal() {
+    document.getElementById('editModal').style.display = 'none';
+}
+
+// Delete Account Modal
+function confirmDelete(id) {
+    document.getElementById('delete_id').value = id;
+    document.getElementById('deleteModal').style.display = 'block';
+}
+
+function closeDeleteModal() {
+    document.getElementById('deleteModal').style.display = 'none';
+}
+
+// Close modals when clicking outside
+window.onclick = function(event) {
+    if (event.target.className === 'modal') {
+        event.target.style.display = 'none';
+    }
 }
 
 // Journal Entry functions
@@ -1067,6 +828,51 @@ function printTransactionHistory() {
 <div style="margin-top: 20px; text-align: right;">
     <button onclick="exportTransactionHistory()"><i class="fas fa-file-export"></i> Export CSV</button>
     <button onclick="printTransactionHistory()"><i class="fas fa-print"></i> Print</button>
+</div>
+
+<!-- Edit Account Modal -->
+<div id="editModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <span class="close" onclick="closeEditModal()">&times;</span>
+        <h3>Edit Account</h3>
+        <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>">
+            <input type="hidden" name="action" value="edit_account">
+            <input type="hidden" name="id" id="edit_id">
+            
+            <div class="form-group">
+                <label>Account Code</label>
+                <input type="text" name="account_code" id="edit_code" required>
+            </div>
+            <div class="form-group">
+                <label>Account Name</label>
+                <input type="text" name="account_name" id="edit_name" required>
+            </div>
+            <div class="form-group">
+                <label>Account Type</label>
+                <select name="account_type" id="edit_type" required>
+                    <option value="Assets">Assets</option>
+                    <option value="Liabilities">Liabilities</option>
+                    <option value="Equity">Equity</option>
+                    <option value="Revenue">Revenue</option>
+                    <option value="Expenses">Expenses</option>
+                </select>
+            </div>
+            <button type="submit">Save Changes</button>
+        </form>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="deleteModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <p>Are you sure you want to delete this account?</p>
+        <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>">
+            <input type="hidden" name="action" value="delete_account">
+            <input type="hidden" name="id" id="delete_id">
+            <button type="submit">Confirm Delete</button>
+            <button type="button" onclick="closeDeleteModal()">Cancel</button>
+        </form>
+    </div>
 </div>
 
 </body>

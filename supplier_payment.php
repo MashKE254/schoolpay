@@ -61,7 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Insert into expense_transactions table
         $stmt = $pdo->prepare("
-            INSERT INTO expense_transactions 
+            INSERT INTO expenses 
             (account_id, transaction_date, amount, description, type, transaction_type) 
             VALUES (?, ?, ?, ?, 'supplier_payment', 'debit')
         ");
@@ -80,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($cashAccount) {
             // Record the credit transaction
             $stmt = $pdo->prepare("
-                INSERT INTO expense_transactions 
+                INSERT INTO expenses 
                 (account_id, transaction_date, amount, description, type, transaction_type) 
                 VALUES (?, ?, ?, ?, 'supplier_payment', 'credit')
             ");

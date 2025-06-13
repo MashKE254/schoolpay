@@ -297,8 +297,11 @@ if (isset($_GET['view_student'])) {
                 p.amount,
                 p.payment_method,
                 p.memo,
-                p.invoice_id
+                p.invoice_id,
+                r.id AS receipt_id,
+                r.receipt_number
             FROM payments p
+            LEFT JOIN payment_receipts r ON p.receipt_id = r.id
             WHERE p.student_id = ?
             ORDER BY p.payment_date ASC
         ");
@@ -326,6 +329,12 @@ if (isset($_GET['view_student'])) {
                 'amount' => $payment['amount'] ?? 0
             ];
         }
+
+        if ($trans['type'] === 'payment'): ?>
+        <a href="javascript:void(0);" onclick="viewReceipt(<?= $trans['receipt_id'] ?>)">
+            Receipt #<?= $trans['receipt_number'] ?>
+        </a>
+        <?php endif;
 
         // Calculate balances
         usort($allTransactions, function($a, $b) {
@@ -410,6 +419,7 @@ $students = getStudents($pdo);
     <button class="tab-link" onclick="openTab(event, 'items')">Items</button>
     <button class="tab-link" onclick="openTab(event, 'receive_payment')">Receive Payment</button>
     <button class="tab-link" onclick="openTab(event, 'statements')">Statements</button>
+    <button class="tab-link" onclick="openTab(event, 'receipts')">Receipts</button>
     <?php if (isset($_GET['view_student']) && $studentDetail): ?>
     <button class="tab-link active" onclick="openTab(event, 'student_detail')">Student Detail</button>
     <?php endif; ?>
@@ -582,47 +592,58 @@ $students = getStudents($pdo);
         <h3>Invoices</h3>
         <div class="table-actions">
             <a href="create_invoice.php" class="btn-primary">Create New Invoice</a>
+            <button class="btn-secondary" id="downloadSelected">Download Selected</button>
+            <button class="btn-secondary" id="sendWhatsApp">Send via WhatsApp</button>
         </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Student</th>
-                    <th>Date</th>
-                    <th>Due Date</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($invoices as $inv): ?>
-                <tr>
-                    <td><?php echo htmlspecialchars($inv['id']); ?></td>
-                    <td><?php echo htmlspecialchars($inv['student_name']); ?></td>
-                    <td><?php echo date('M d, Y', strtotime($inv['invoice_date'])); ?></td>
-                    <td><?php echo date('M d, Y', strtotime($inv['due_date'])); ?></td>
-                    <td>$<?php echo number_format($inv['total_amount'] ?? 0, 2); ?></td>
-                    <td>
-                        <?php
-                        $status = 'Draft';
-                        if (isset($inv['paid_amount']) && $inv['paid_amount'] > 0) {
-                            if ($inv['paid_amount'] >= $inv['total_amount']) {
-                                $status = 'Paid';
-                            } else {
-                                $status = 'Partially Paid';
+        <form id="invoiceSelectionForm">
+            <table>
+                <thead>
+                    <tr>
+                        <th><!-- Checkbox column --></th>
+                        <th>ID</th>
+                        <th>Student</th>
+                        <th>Date</th>
+                        <th>Due Date</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach($invoices as $inv): ?>
+                    <tr>
+                        <td>
+                            <input type="checkbox" name="selected_invoices[]" 
+                                   value="<?php echo $inv['id']; ?>" 
+                                   class="invoice-checkbox">
+                        </td>
+                        <td><?php echo htmlspecialchars($inv['id']); ?></td>
+                        <td><?php echo htmlspecialchars($inv['student_name']); ?></td>
+                        <td><?php echo date('M d, Y', strtotime($inv['invoice_date'])); ?></td>
+                        <td><?php echo date('M d, Y', strtotime($inv['due_date'])); ?></td>
+                        <td>$<?php echo number_format($inv['total_amount'] ?? 0, 2); ?></td>
+                        <td>
+                            <?php
+                            $status = 'Draft';
+                            if (isset($inv['paid_amount']) && $inv['paid_amount'] > 0) {
+                                if ($inv['paid_amount'] >= $inv['total_amount']) {
+                                    $status = 'Paid';
+                                } else {
+                                    $status = 'Partially Paid';
+                                }
                             }
-                        }
-                        echo $status;
-                        ?>
-                    </td>
-                    <td>
-                        <a href="view_invoice.php?id=<?php echo $inv['id']; ?>" class="btn-small">View</a>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+                            echo $status;
+                            ?>
+                        </td>
+                        <td>
+                            <a href="view_invoice.php?id=<?php echo $inv['id']; ?>" class="btn-small">View</a>
+                            <a href="download_invoice.php?id=<?php echo $inv['id']; ?>" class="btn-small">Download</a>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </form>
     </div>
 </div>
 
@@ -901,79 +922,147 @@ $students = getStudents($pdo);
         </form>
     </div>
 </div>
+
+<!-- Receipts Tab -->
+<div id="receipts" class="tab-content">
+    <div class="card">
+        <h3>Payment Receipts</h3>
+        <div class="table-controls">
+            <div class="search-box">
+                <input type="text" id="receiptSearch" placeholder="Search receipts..." onkeyup="searchReceipts()">
+                <button class="btn-search" onclick="searchReceipts()">🔍</button>
+            </div>
+            <div class="filter-controls">
+                <label for="dateFilter">Date Range:</label>
+                <input type="date" id="startDate">
+                <input type="date" id="endDate">
+                <button class="btn-filter" onclick="filterReceipts()">Filter</button>
+            </div>
+        </div>
+        <table id="receiptsTable">
+        <thead>
+            <tr>
+                <th>Receipt #</th>
+                <th>Student</th>
+                <th>Date</th>
+                <th>Amount</th>
+                <th>Payment Method</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php
+            $receipts = getAllReceipts($pdo);
+            foreach ($receipts as $receipt) : ?>
+                <tr data-receipt-id="<?= $receipt['id'] ?>">
+                    <td><?= htmlspecialchars($receipt['receipt_number']) ?></td>
+                    <td><?= htmlspecialchars($receipt['student_name']) ?></td>
+                    <td><?= date('M d, Y', strtotime($receipt['payment_date'])) ?></td>
+                    <td>Ksh <?= number_format($receipt['amount'], 2) ?></td>
+                    <td><?= htmlspecialchars($receipt['payment_method']) ?></td>
+                    <td>
+                        <button class="btn-view" onclick="viewReceipt(<?= $receipt['id'] ?>)">View</button>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </tbody>
+    </table>
+        <!-- Inside receipts tab content -->
+        <div class="pagination">
+            <button id="prevPage" class="btn-pagination">Previous</button>
+            <span id="currentPage">1</span>
+            <button id="nextPage" class="btn-pagination">Next</button>
+        </div>
+    </div>
+</div>
 </div>
 
-<!-- Add New Student Modal -->
+<!-- Updated Receipt Modal -->
+<div id="receiptModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 700px;">
+        <div class="modal-header">
+            <h3>Payment Receipt</h3>
+            <span class="close" onclick="closeReceiptModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div id="receiptContent" class="receipt-container"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" onclick="printReceipt()">Print Receipt</button>
+            <button class="btn-secondary" onclick="closeReceiptModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Updated Add Student Modal -->
 <div id="addStudentModal" class="modal" style="display: none;">
-<div class="modal-content">
-    <span class="close" onclick="closeAddModal()">&times;</span>
-    <h3>Add New Student</h3>
-    <form id="addStudentForm" method="post">
-        <input type="hidden" name="addStudent" value="1">
-        
-        <div class="form-group">
-            <label for="name">Name:</label>
-            <input type="text" name="name" id="name" required>
+    <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3>Add New Student</h3>
+            <span class="close" onclick="closeAddModal()">&times;</span>
         </div>
-        
-        <div class="form-group">
-            <label for="email">Email:</label>
-            <input type="email" name="email" id="email" required>
+        <div class="modal-body">
+            <form id="addStudentForm" method="post">
+                <input type="hidden" name="addStudent" value="1">
+                <div class="form-group">
+                    <label for="name">Full Name:</label>
+                    <input type="text" name="name" id="name" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="email">Email:</label>
+                    <input type="email" name="email" id="email" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="phone">Phone:</label>
+                    <input type="text" name="phone" id="phone" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="address">Address:</label>
+                    <textarea name="address" id="address" rows="3" required class="modal-input"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary">Add Student</button>
+                    <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
+                </div>
+            </form>
         </div>
-        
-        <div class="form-group">
-            <label for="phone">Phone:</label>
-            <input type="text" name="phone" id="phone" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="address">Address:</label>
-            <textarea name="address" id="address" rows="3" required></textarea>
-        </div>
-        
-        <div class="form-actions">
-            <button type="submit" class="btn-primary">Add Student</button>
-            <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
-        </div>
-    </form>
-</div>
+    </div>
 </div>
 
-<!-- Edit Student Modal -->
+<!-- Updated Edit Student Modal -->
 <div id="editStudentModal" class="modal" style="display: none;">
-<div class="modal-content">
-    <span class="close" onclick="closeEditModal()">&times;</span>
-    <h3>Edit Student</h3>
-    <form id="editStudentForm" method="post">
-        <input type="hidden" name="student_id" id="edit_student_id">
-        <input type="hidden" name="editStudent" value="1">
-        
-        <div class="form-group">
-            <label for="edit_name">Name:</label>
-            <input type="text" name="name" id="edit_name" required>
+    <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3>Edit Student</h3>
+            <span class="close" onclick="closeEditModal()">&times;</span>
         </div>
-        
-        <div class="form-group">
-            <label for="edit_email">Email:</label>
-            <input type="email" name="email" id="edit_email" required>
+        <div class="modal-body">
+            <form id="editStudentForm" method="post">
+                <input type="hidden" name="student_id" id="edit_student_id">
+                <input type="hidden" name="editStudent" value="1">
+                <div class="form-group">
+                    <label for="edit_name">Name:</label>
+                    <input type="text" name="name" id="edit_name" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="edit_email">Email:</label>
+                    <input type="email" name="email" id="edit_email" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="edit_phone">Phone:</label>
+                    <input type="text" name="phone" id="edit_phone" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="edit_address">Address:</label>
+                    <textarea name="address" id="edit_address" rows="3" required class="modal-input"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary">Update Student</button>
+                    <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
+                </div>
+            </form>
         </div>
-        
-        <div class="form-group">
-            <label for="edit_phone">Phone:</label>
-            <input type="text" name="phone" id="edit_phone" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="edit_address">Address:</label>
-            <textarea name="address" id="edit_address" rows="3" required></textarea>
-        </div>
-        
-        <div class="form-actions">
-            <button type="submit" class="btn-primary">Update Student</button>
-            <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
-        </div>
-    </form>
-</div>
+    </div>
 </div>
 
 <!-- Edit Item Modal -->
@@ -1017,391 +1106,6 @@ $students = getStudents($pdo);
     </form>
 </div>
 </div>
-
-<style>
-.modal {
-display: none;
-position: fixed;
-z-index: 1;
-left: 0;
-top: 0;
-width: 100%;
-height: 100%;
-background-color: rgba(0,0,0,0.4);
-}
-
-.modal-content {
-background-color: #fefefe;
-margin: 15% auto;
-padding: 20px;
-border: 1px solid #888;
-width: 80%;
-max-width: 500px;
-border-radius: 8px;
-}
-
-.close {
-color: #aaa;
-float: right;
-font-size: 28px;
-font-weight: bold;
-cursor: pointer;
-}
-
-.close:hover {
-color: black;
-}
-
-.table-actions {
-margin-bottom: 15px;
-}
-
-.btn-primary {
-background: #2196F3;
-color: white;
-border: none;
-padding: 8px 16px;
-border-radius: 4px;
-text-decoration: none;
-display: inline-block;
-cursor: pointer;
-}
-
-.btn-small {
-background: #f5f5f5;
-color: #333;
-border: 1px solid #ddd;
-padding: 4px 8px;
-border-radius: 4px;
-text-decoration: none;
-font-size: 12px;
-}
-
-.status-draft { color: #666; }
-.status-sent { color: #2196F3; }
-.status-paid { color: #4CAF50; }
-.status-overdue { color: #f44336; }
-.status-cancelled { color: #666; }
-
-.items-list {
-display: grid;
-grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-gap: 20px;
-margin-top: 20px;
-}
-
-.item-card {
-background: #fff;
-border-radius: 8px;
-box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-padding: 20px;
-}
-
-.item-header {
-display: flex;
-justify-content: space-between;
-align-items: center;
-margin-bottom: 15px;
-}
-
-.item-actions {
-display: flex;
-gap: 10px;
-}
-
-.sub-items {
-margin-top: 15px;
-padding-top: 15px;
-border-top: 1px solid #eee;
-}
-
-.sub-item {
-background: #f9f9f9;
-padding: 10px;
-border-radius: 4px;
-margin-top: 10px;
-}
-
-.sub-item-header {
-display: flex;
-justify-content: space-between;
-align-items: center;
-margin-bottom: 5px;
-}
-
-.btn-edit {
-background: #2196F3;
-color: white;
-border: none;
-padding: 5px 10px;
-border-radius: 4px;
-cursor: pointer;
-}
-
-.btn-delete {
-background: #f44336;
-color: white;
-border: none;
-padding: 5px 10px;
-border-radius: 4px;
-cursor: pointer;
-}
-
-.form-group {
-margin-bottom: 15px;
-}
-
-.form-group label {
-display: block;
-margin-bottom: 5px;
-font-weight: bold;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-width: 100%;
-padding: 8px;
-border: 1px solid #ddd;
-border-radius: 4px;
-box-sizing: border-box;
-}
-
-.form-row {
-display: flex;
-flex-wrap: wrap;
-gap: 15px;
-margin-bottom: 15px;
-}
-
-.form-row .form-group {
-flex: 1;
-min-width: 200px;
-}
-
-.form-actions {
-margin-top: 20px;
-display: flex;
-justify-content: flex-end;
-gap: 10px;
-}
-
-.unpaid-invoices {
-margin-top: 20px;
-}
-
-.text-right {
-text-align: right;
-}
-
-.btn-add {
-background: #4CAF50;
-color: white;
-border: none;
-padding: 8px 16px;
-border-radius: 4px;
-cursor: pointer;
-}
-
-.btn-secondary {
-background: #f5f5f5;
-color: #333;
-border: 1px solid #ddd;
-padding: 8px 16px;
-border-radius: 4px;
-cursor: pointer;
-}
-
-.tab-container {
-width: 100%;
-margin-top: 20px;
-}
-
-.tabs {
-overflow: hidden;
-border: 1px solid #ccc;
-background-color: #f1f1f1;
-border-top-left-radius: 4px;
-border-top-right-radius: 4px;
-}
-
-.tab-link {
-background-color: inherit;
-float: left;
-border: none;
-outline: none;
-cursor: pointer;
-padding: 14px 16px;
-transition: 0.3s;
-font-size: 17px;
-}
-
-.tab-link:hover {
-background-color: #ddd;
-}
-
-.tab-link.active {
-background-color: #fff;
-border-bottom: 2px solid #2196F3;
-}
-
-.tab-content {
-display: none;
-padding: 20px;
-border: 1px solid #ccc;
-border-top: none;
-border-bottom-left-radius: 4px;
-border-bottom-right-radius: 4px;
-}
-
-.template-options {
-display: flex;
-gap: 20px;
-margin: 15px 0;
-}
-
-.template-item {
-text-align: center;
-cursor: pointer;
-}
-
-.template-item input[type="radio"] {
-display: none;
-}
-
-.template-item label {
-display: flex;
-flex-direction: column;
-align-items: center;
-cursor: pointer;
-}
-
-.template-item img {
-border: 2px solid #ddd;
-border-radius: 4px;
-padding: 5px;
-width: 150px;
-height: 80px;
-object-fit: cover;
-transition: all 0.3s;
-}
-
-.template-item input[type="radio"]:checked + label img {
-border-color: #2196F3;
-box-shadow: 0 0 5px rgba(33, 150, 243, 0.5);
-}
-
-.preview-area {
-margin-top: 30px;
-border: 1px solid #ddd;
-padding: 20px;
-border-radius: 4px;
-background-color: #f9f9f9;
-min-height: 200px;
-}
-
-.checkbox-group {
-margin: 15px 0;
-}
-
-.checkbox-item {
-margin-bottom: 8px;
-}
-
-/* Make sure tables look nice */
-table {
-width: 100%;
-border-collapse: collapse;
-margin-bottom: 20px;
-}
-
-table th, table td {
-padding: 12px;
-text-align: left;
-border-bottom: 1px solid #ddd;
-}
-
-table th {
-background-color: #f2f2f2;
-font-weight: bold;
-}
-
-table tr:hover {
-background-color: #f5f5f5;
-}
-
-.student-name-link {
-    color: #2196F3;
-    text-decoration: none;
-    font-weight: 600;
-    position: relative;
-    padding: 2px 4px;
-    border-radius: 4px;
-    transition: all 0.3s ease;
-}
-
-.student-name-link:hover {
-    background-color: #e3f2fd;
-    color: #0d47a1;
-}
-
-.student-name-link:after {
-    content: '';
-    position: absolute;
-    width: 0;
-    height: 2px;
-    bottom: 0;
-    left: 0;
-    background-color: #2196F3;
-    transition: width 0.3s ease;
-}
-
-.student-name-link:hover:after {
-    width: 100%;
-}
-
-@keyframes rippleEffect {
-    0% {
-        opacity: 1;
-        transform: translate(-50%, -50%) scale(0);
-    }
-    100% {
-        opacity: 0;
-        transform: translate(-50%, -50%) scale(2);
-    }
-}
-
-.student-link-ripple {
-    animation: rippleEffect 0.6s ease-out;
-}
-
-/* Responsive adjustments */
-@media screen and (max-width: 768px) {
-.form-row {
-    flex-direction: column;
-}
-
-.tab-link {
-    width: 100%;
-    text-align: center;
-}
-
-.item-header {
-    flex-direction: column;
-    align-items: flex-start;
-}
-
-.item-actions {
-    margin-top: 10px;
-}
-
-.template-options {
-    flex-direction: column;
-}
-
-
-}
-</style>
 
 <script>
 function openTab(evt, tabName) {
@@ -1573,14 +1277,261 @@ const date = new Date(dateString);
 return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// In customer_center.php
 function handlePaymentSubmit(event) {
-const total = parseFloat(document.getElementById('totalPayment').textContent.replace('$', ''));
-if (total <= 0) {
+  event.preventDefault();
+  
+  const formData = new FormData(document.getElementById('paymentForm'));
+  const total = parseFloat(document.getElementById('totalPayment').textContent.replace('$', ''));
+  
+  if (total <= 0) {
     alert('Please enter at least one payment amount.');
-    event.preventDefault();
     return false;
+  }
+
+  // Show loading indicator
+  const submitBtn = event.target.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Processing...';
+
+  fetch('record_payment.php', {
+    method: 'POST',
+    body: formData
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      // Show receipt modal
+      showReceipt({
+        receipt_number: data.receipt_number,
+        student_name: document.querySelector('#student_id option:checked').textContent,
+        payment_date: document.getElementById('payment_date').value,
+        amount: total,
+        payment_method: document.getElementById('payment_method').value,
+        memo: document.getElementById('memo').value
+      });
+      const footer = `
+      <div class="form-actions">
+                <button class="btn-primary" onclick="printReceipt()">Print Receipt</button>
+                <button class="btn-secondary" onclick="closeReceiptModal()">Close</button>
+                <button class="btn-view" onclick="openReceiptsTab()">View in Receipts Tab</button>
+            </div>
+        `;
+      document.getElementById('receiptContent').insertAdjacentHTML('beforeend', footer);
+      
+      // Reset form and reload data
+      document.getElementById('paymentForm').reset();
+      loadUnpaidInvoices();
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Record Payment';
+      
+      // Optionally, you can redirect to the receipts tab
+      openTab(event, 'receipts');
+    } else {
+      showAlert('Error: ' + (data.error || 'Payment failed'));
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Record Payment';
+    }
+  })
+  .catch(error => {
+    showAlert('Network error: ' + error.message);
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Record Payment';
+  });
+  
+  return false;
 }
-return true;
+
+function showReceipt(receipt) {
+  const content = `
+    <div class="receipt-header">
+      <h2>Bloomfield School</h2>
+      <p>123 School Street, Nairobi, Kenya</p>
+      <p>Phone: +254 712 345 678</p>
+    </div>
+    
+    <div class="receipt-details">
+      <p><strong>Receipt No:</strong> ${receipt.receipt_number}</p>
+      <p><strong>Date:</strong> ${new Date(receipt.payment_date).toLocaleDateString()}</p>
+    </div>
+    
+    <div class="student-info">
+      <p><strong>Student:</strong> ${receipt.student_name}</p>
+      <p><strong>Receipt For:</strong> Payment Received</p>
+    </div>
+    
+    <table class="receipt-items">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th>Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>School Fees Payment</td>
+          <td>Ksh ${parseFloat(receipt.amount).toFixed(2)}</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <th>Total Paid</th>
+          <th>Ksh ${parseFloat(receipt.amount).toFixed(2)}</th>
+        </tr>
+      </tfoot>
+    </table>
+    
+    <div class="payment-method">
+      <p><strong>Payment Method:</strong> ${receipt.payment_method}</p>
+      <p><strong>Memo:</strong> ${receipt.memo || 'N/A'}</p>
+    </div>
+    
+    <div class="receipt-footer">
+      <p>Thank you for your payment!</p>
+    </div>
+  `;
+  
+  document.getElementById('receiptContent').innerHTML = content;
+  document.getElementById('receiptModal').style.display = 'block';
+}
+
+function openReceiptsTab() {
+    
+    // Switch to receipts tab
+    const tabs = document.querySelectorAll('.tab-link');
+    const contents = document.querySelectorAll('.tab-content');
+    
+    // Remove active class from all tabs
+    tabs.forEach(tab => tab.classList.remove('active'));
+    contents.forEach(content => content.style.display = 'none');
+    
+    // Activate receipts tab
+    document.querySelector('[onclick="openTab(event, \'receipts\')"]').classList.add('active');
+    document.getElementById('receipts').style.display = 'block';
+    
+    // Highlight the receipt in the table
+    highlightReceipt(receipt.id);
+}
+
+function closeReceiptModal() {
+    document.getElementById('receiptModal').style.display = 'none';
+}
+
+
+function highlightReceipt(receiptId) {
+    const rows = document.querySelectorAll('#receiptsTable tbody tr');
+    rows.forEach(row => {
+        if (row.dataset.receiptId == receiptId) {
+            row.style.backgroundColor = '#e3f2fd';
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            row.style.backgroundColor = '';
+        }
+    });
+}
+
+function searchReceipts() {
+    const searchTerm = document.getElementById('receiptSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('#receiptsTable tbody tr');
+    
+    rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        const receiptNum = cells[0].textContent.toLowerCase();
+        const studentName = cells[1].textContent.toLowerCase();
+        const date = cells[2].textContent.toLowerCase();
+        const amount = cells[3].textContent.toLowerCase();
+        const method = cells[4].textContent.toLowerCase();
+        
+        if (receiptNum.includes(searchTerm) || 
+            studentName.includes(searchTerm) || 
+            date.includes(searchTerm) || 
+            amount.includes(searchTerm) || 
+            method.includes(searchTerm)) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+
+function filterReceipts() {
+    const startDate = new Date(document.getElementById('startDate').value);
+    const endDate = new Date(document.getElementById('endDate').value);
+    const rows = document.querySelectorAll('#receiptsTable tbody tr');
+    
+    rows.forEach(row => {
+        const dateCell = row.querySelector('td:nth-child(3)');
+        if (!dateCell) return;
+        
+        const receiptDate = new Date(dateCell.textContent);
+        
+        if ((!startDate || receiptDate >= startDate) && 
+            (!endDate || receiptDate <= endDate)) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+
+function sortReceipts(column) {
+    const table = document.getElementById('receiptsTable');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    
+    rows.sort((a, b) => {
+        const aValue = a.querySelector(`td:nth-child(${getColumnIndex(column)})`).textContent;
+        const bValue = b.querySelector(`td:nth-child(${getColumnIndex(column)})`).textContent;
+        
+        // Handle numeric values
+        if (column === 'amount') {
+            return parseFloat(aValue.replace('Ksh ', '')) - parseFloat(bValue.replace('Ksh ', ''));
+        }
+        
+        // Handle dates
+        if (column === 'payment_date') {
+            return new Date(aValue) - new Date(bValue);
+        }
+        
+        // Default to string comparison
+        return aValue.localeCompare(bValue);
+    });
+    
+    // Clear and re-add sorted rows
+    tbody.innerHTML = '';
+    rows.forEach(row => tbody.appendChild(row));
+}
+
+function getColumnIndex(column) {
+    const columns = {
+        'receipt_number': 1,
+        'student_name': 2,
+        'payment_date': 3,
+        'amount': 4,
+        'payment_method': 5
+    };
+    return columns[column] || 1;
+}
+
+function viewReceipt(receiptId) {
+    fetch(`get_receipt.php?id=${receiptId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showReceipt(data.receipt);
+            } else {
+                showAlert('Receipt not found');
+            }
+        });
+}
+
+function printReceipt() {
+  const printContent = document.getElementById('receiptContent').innerHTML;
+  const originalContent = document.body.innerHTML;
+  
+  document.body.innerHTML = printContent;
+  window.print();
+  document.body.innerHTML = originalContent;
 }
 
 function toggleStudentSelection() {
@@ -1643,7 +1594,27 @@ document.getElementById('statementForm').addEventListener('submit', function(e) 
 // Initialize the page
 document.addEventListener('DOMContentLoaded', function() {
 // Any initialization code here
+     // Add new event listeners
+    document.getElementById('downloadSelected').addEventListener('click', downloadSelectedInvoices);
+    document.getElementById('sendWhatsApp').addEventListener('click', sendViaWhatsApp);
     
+    // Add "Select All" functionality
+    const selectAll = document.createElement('input');
+    selectAll.type = 'checkbox';
+    selectAll.id = 'selectAllInvoices';
+    selectAll.style.marginRight = '5px';
+    
+    const firstHeader = document.querySelector('#invoices th:first-child');
+    if (firstHeader) {
+        firstHeader.appendChild(selectAll);
+    }
+    
+    selectAll.addEventListener('change', function() {
+        document.querySelectorAll('.invoice-checkbox').forEach(checkbox => {
+            checkbox.checked = this.checked;
+        });
+    });
+});
     // Add visual feedback when clicking on student names
     const studentLinks = document.querySelectorAll('.student-name-link');
     studentLinks.forEach(link => {
@@ -1691,5 +1662,91 @@ document.addEventListener('DOMContentLoaded', function() {
         avatar.style.backgroundColor = randomColor.bg;
         avatar.style.color = randomColor.text;
     });
-});
+
+// Add this after your other JavaScript functions
+let currentPage = 1;
+const rowsPerPage = 10;
+
+function setupPagination() {
+    const rows = document.querySelectorAll('#receiptsTable tbody tr');
+    const pageCount = Math.ceil(rows.length / rowsPerPage);
+    
+    // Update pagination controls
+    document.getElementById('prevPage').addEventListener('click', () => {
+        if (currentPage > 1) showPage(--currentPage);
+    });
+    
+    document.getElementById('nextPage').addEventListener('click', () => {
+        if (currentPage < pageCount) showPage(++currentPage);
+    });
+    
+    // Initial page display
+    showPage(currentPage);
+}
+
+function showPage(page) {
+    const rows = document.querySelectorAll('#receiptsTable tbody tr');
+    const startIndex = (page - 1) * rowsPerPage;
+    const endIndex = startIndex + rowsPerPage;
+    
+    rows.forEach((row, index) => {
+        row.style.display = (index >= startIndex && index < endIndex) ? '' : 'none';
+    });
+    
+    document.getElementById('currentPage').textContent = page;
+}
+
+// Initialize pagination when page loads
+document.addEventListener('DOMContentLoaded', setupPagination);
+
+function downloadSelectedInvoices() {
+    const selected = [];
+    document.querySelectorAll('.invoice-checkbox:checked').forEach(checkbox => {
+        selected.push(checkbox.value);
+    });
+
+    if (selected.length === 0) {
+        showAlert('Please select at least one invoice');
+        return;
+    }
+
+    // Create a temporary form to submit
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = 'download_invoices.php';
+    
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'invoice_ids';
+    input.value = JSON.stringify(selected);
+    
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+}
+
+function sendViaWhatsApp() {
+    const selected = [];
+    document.querySelectorAll('.invoice-checkbox:checked').forEach(checkbox => {
+        selected.push(checkbox.value);
+    });
+
+    if (selected.length === 0) {
+        showAlert('Please select at least one invoice');
+        return;
+    }
+
+    // In a real implementation, this would send to your backend
+    // For now, we'll simulate the behavior
+    if (selected.length === 1) {
+        // For single invoice, open WhatsApp directly
+        const invoiceId = selected[0];
+        const message = encodeURIComponent(`Please find your invoice attached: ${window.location.origin}/download_invoice.php?id=${invoiceId}`);
+        window.open(`https://api.whatsapp.com/send?text=${message}`, '_blank');
+    } else {
+        showAlert('Preparing to send multiple invoices via WhatsApp...');
+        // In real implementation, this would create a ZIP file and send
+    }
+}
+
 </script>

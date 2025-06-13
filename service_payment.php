@@ -34,7 +34,7 @@ try {
     
     // Insert the service payment into the expense_transactions table
     $stmt = $pdo->prepare("
-        INSERT INTO expense_transactions (
+        INSERT INTO expenses (
             transaction_date, 
             description, 
             amount, 
@@ -69,7 +69,7 @@ try {
         $cash_account_id = $cash_account['id'];
         
         $credit_stmt = $pdo->prepare("
-            INSERT INTO expense_transactions (
+            INSERT INTO expenses (
                 transaction_date, 
                 description, 
                 amount, 

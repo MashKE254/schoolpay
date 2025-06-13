@@ -47,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Insert transaction record - using expense_transactions table
             $stmt = $pdo->prepare("
-                INSERT INTO expense_transactions (
+                INSERT INTO expenses (
                     account_id, 
                     transaction_date, 
                     amount, 

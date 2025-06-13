@@ -5,7 +5,6 @@ require 'functions.php';
 include 'header.php';
 
 // Example data retrieval – replace these with your actual query functions
-$plData = getProfitLossData($pdo, '2025-03-01', '2025-03-31');  // Profit & Loss sample data
 
 // Dummy Income by Customer report data
 $incomeByCustomer = [
