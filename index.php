@@ -4,17 +4,44 @@ require 'config.php';
 require 'functions.php';
 include 'header.php';
 
-// Calculate total students
-$stmt = $pdo->query("SELECT COUNT(*) as total_students FROM students");
-$totalStudents = $stmt->fetch(PDO::FETCH_ASSOC)['total_students'];
+// Calculate total students - FIXED WITH ERROR HANDLING
+$totalStudents = 0;
+try {
+    $stmt = $pdo->query("SELECT COUNT(*) as total_students FROM students");
+    if ($stmt) {
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        $totalStudents = $result['total_students'] ?? 0;
+    }
+} catch (PDOException $e) {
+    error_log("Student count error: " . $e->getMessage());
+    $totalStudents = 0;
+}
 
 // Calculate total income (sum of all payments)
-$stmt = $pdo->query("SELECT SUM(amount) as total_income FROM payments");
-$totalIncome = $stmt->fetch(PDO::FETCH_ASSOC)['total_income'] ?? 0;
+$totalIncome = 0;
+try {
+    $stmt = $pdo->query("SELECT SUM(amount) as total_income FROM payments");
+    if ($stmt) {
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        $totalIncome = $result['total_income'] ?? 0;
+    }
+} catch (PDOException $e) {
+    error_log("Income calculation error: " . $e->getMessage());
+    $totalIncome = 0;
+}
 
-// Calculate total expenses (if you have an expenses table)
-$stmt = $pdo->query("SELECT SUM(amount) as total_expenses FROM expenses");
-$totalExpenses = $stmt->fetch(PDO::FETCH_ASSOC)['total_expenses'] ?? 0;
+// Calculate total expenses
+$totalExpenses = 0;
+try {
+    $stmt = $pdo->query("SELECT SUM(amount) as total_expenses FROM expenses");
+    if ($stmt) {
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        $totalExpenses = $result['total_expenses'] ?? 0;
+    }
+} catch (PDOException $e) {
+    error_log("Expense calculation error: " . $e->getMessage());
+    $totalExpenses = 0;
+}
 
 // Calculate current balance (income - expenses)
 $currentBalance = $totalIncome - $totalExpenses;
@@ -23,45 +50,55 @@ $currentBalance = $totalIncome - $totalExpenses;
 $recentTransactions = [];
 
 // Get recent payments
-$stmt = $pdo->query("
-    SELECT 
-        p.id,
-        p.payment_date as date,
-        p.amount,
-        'Payment' as type,
-        s.name as related_name,
-        i.id as reference_number
-    FROM 
-        payments p
-    JOIN 
-        invoices i ON p.invoice_id = i.id
-    JOIN 
-        students s ON i.student_id = s.id
-    ORDER BY 
-        p.payment_date DESC
-    LIMIT 5
-");
-$recentPayments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-$recentTransactions = array_merge($recentTransactions, $recentPayments);
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            p.id,
+            p.payment_date as date,
+            p.amount,
+            'Payment' as type,
+            s.name as related_name,
+            i.id as reference_number
+        FROM 
+            payments p
+        JOIN 
+            invoices i ON p.invoice_id = i.id
+        JOIN 
+            students s ON i.student_id = s.id
+        ORDER BY 
+            p.payment_date DESC
+        LIMIT 5
+    ");
+    if ($stmt) {
+        $recentPayments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $recentTransactions = array_merge($recentTransactions, $recentPayments);
+    }
+} catch (PDOException $e) {
+    error_log("Recent payments error: " . $e->getMessage());
+}
 
-// Get recent expenses (if you have an expenses table)
-$stmt = $pdo->query("
-    SELECT 
-        e.id,
-        e.transaction_date as date,
-        e.amount,
-        'Expense' as type,
-        e.type as related_name,
-        e.reference_number
-    FROM 
-        expenses e
-    ORDER BY 
-        e.transaction_date DESC
-    LIMIT 5
-");
-if ($stmt) {
-    $recentExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $recentTransactions = array_merge($recentTransactions, $recentExpenses);
+// Get recent expenses
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            e.id,
+            e.transaction_date as date,
+            e.amount,
+            'Expense' as type,
+            e.type as related_name,
+            e.reference_number
+        FROM 
+            expenses e
+        ORDER BY 
+            e.transaction_date DESC
+        LIMIT 5
+    ");
+    if ($stmt) {
+        $recentExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $recentTransactions = array_merge($recentTransactions, $recentExpenses);
+    }
+} catch (PDOException $e) {
+    error_log("Recent expenses error: " . $e->getMessage());
 }
 
 // Sort transactions by date (newest first)
@@ -71,89 +108,114 @@ usort($recentTransactions, function($a, $b) {
 $recentTransactions = array_slice($recentTransactions, 0, 5);
 
 // Get overdue invoices
-$stmt = $pdo->query("
-    SELECT 
-        i.id,
-        i.id as invoice_number,
-        i.invoice_date,
-        i.due_date,
-        i.total_amount,
-        COALESCE(SUM(p.amount), 0) as paid_amount,
-        i.total_amount - COALESCE(SUM(p.amount), 0) as balance,
-        s.name as student_name,
-        DATEDIFF(CURRENT_DATE, i.due_date) as days_overdue
-    FROM 
-        invoices i
-    JOIN 
-        students s ON i.student_id = s.id
-    LEFT JOIN 
-        payments p ON i.id = p.invoice_id
-    WHERE 
-        i.due_date < CURRENT_DATE
-    GROUP BY 
-        i.id
-    HAVING 
-        balance > 0
-    ORDER BY 
-        days_overdue DESC
-    LIMIT 5
-");
-$overdueInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$overdueInvoices = [];
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            i.id,
+            i.id as invoice_number,
+            i.invoice_date,
+            i.due_date,
+            i.total_amount,
+            COALESCE(SUM(p.amount), 0) as paid_amount,
+            i.total_amount - COALESCE(SUM(p.amount), 0) as balance,
+            s.name as student_name,
+            DATEDIFF(CURRENT_DATE, i.due_date) as days_overdue
+        FROM 
+            invoices i
+        JOIN 
+            students s ON i.student_id = s.id
+        LEFT JOIN 
+            payments p ON i.id = p.invoice_id
+        WHERE 
+            i.due_date < CURRENT_DATE
+        GROUP BY 
+            i.id
+        HAVING 
+            balance > 0
+        ORDER BY 
+            days_overdue DESC
+        LIMIT 5
+    ");
+    if ($stmt) {
+        $overdueInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (PDOException $e) {
+    error_log("Overdue invoices error: " . $e->getMessage());
+}
 
 // Get monthly income for chart (last 6 months)
-$stmt = $pdo->query("
-    SELECT 
-        DATE_FORMAT(payment_date, '%Y-%m') as month,
-        SUM(amount) as monthly_income
-    FROM 
-        payments
-    WHERE 
-        payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
-    GROUP BY 
-        DATE_FORMAT(payment_date, '%Y-%m')
-    ORDER BY 
-        month ASC
-");
-$monthlyIncome = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$monthlyIncome = [];
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            DATE_FORMAT(payment_date, '%Y-%m') as month,
+            SUM(amount) as monthly_income
+        FROM 
+            payments
+        WHERE 
+            payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
+        GROUP BY 
+            DATE_FORMAT(payment_date, '%Y-%m')
+        ORDER BY 
+            month ASC
+    ");
+    if ($stmt) {
+        $monthlyIncome = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (PDOException $e) {
+    error_log("Monthly income error: " . $e->getMessage());
+}
 
 // Get monthly expenses for chart (last 6 months)
 $monthlyExpenses = [];
-$stmt = $pdo->query("
-    SELECT 
-        DATE_FORMAT(transaction_date, '%Y-%m') as month,
-        SUM(amount) as monthly_expense
-    FROM 
-        expenses
-    WHERE 
-        transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
-    GROUP BY 
-        DATE_FORMAT(transaction_date, '%Y-%m')
-    ORDER BY 
-        month ASC
-");
-if ($stmt) {
-    $monthlyExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            DATE_FORMAT(transaction_date, '%Y-%m') as month,
+            SUM(amount) as monthly_expense
+        FROM 
+            expenses
+        WHERE 
+            transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
+        GROUP BY 
+            DATE_FORMAT(transaction_date, '%Y-%m')
+        ORDER BY 
+            month ASC
+    ");
+    if ($stmt) {
+        $monthlyExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (PDOException $e) {
+    error_log("Monthly expenses error: " . $e->getMessage());
 }
 
 // Get top students by amount paid
-$stmt = $pdo->query("
-    SELECT 
-        s.id,
-        s.name,
-        SUM(p.amount) as total_paid
-    FROM 
-        students s
-    JOIN 
-        invoices i ON s.id = i.student_id
-    JOIN 
-        payments p ON i.id = p.invoice_id
-    GROUP BY 
-        s.id
-    ORDER BY 
-        total_paid DESC
-    LIMIT 5
-");
-$topStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$topStudents = [];
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            s.id,
+            s.name,
+            SUM(p.amount) as total_paid
+        FROM 
+            students s
+        JOIN 
+            invoices i ON s.id = i.student_id
+        JOIN 
+            payments p ON i.id = p.invoice_id
+        GROUP BY 
+            s.id
+        ORDER BY 
+            total_paid DESC
+        LIMIT 5
+    ");
+    if ($stmt) {
+        $topStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (PDOException $e) {
+    error_log("Top students error: " . $e->getMessage());
+}
 
 // Check if we should refresh the dashboard (used by other pages)
 $refreshScript = '';
