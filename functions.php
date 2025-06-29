@@ -113,32 +113,26 @@ function getPayrollRecords(PDO $pdo): array
 
 // Example: Get report data (P&L) – dummy data
 function getProfitLossData($pdo, $startDate, $endDate) {
-    // Get income
-    $stmt = $pdo->prepare("
-        SELECT SUM(total_amount) as income
-        FROM invoices
-        WHERE status = 'Paid'
-        AND invoice_date BETWEEN ? AND ?
-    ");
-    $stmt->execute([$startDate, $endDate]);
-    $income = $stmt->fetch(PDO::FETCH_ASSOC)['income'] ?? 0;
-    
-    // Get expenses
-    $stmt = $pdo->prepare("
-        SELECT SUM(amount) as expenses
-        FROM expenses
-        WHERE date BETWEEN ? AND ?
-    ");
-    $stmt->execute([$startDate, $endDate]);
-    $expenses = $stmt->fetch(PDO::FETCH_ASSOC)['expenses'] ?? 0;
-    
+    // Get total income (from payments)
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as income 
+                          FROM payments 
+                          WHERE payment_date BETWEEN :start AND :end");
+    $stmt->execute([':start' => $startDate, ':end' => $endDate]);
+    $income = $stmt->fetchColumn();
+
+    // Get total expenses
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as expenses 
+                          FROM expenses 
+                          WHERE transaction_date BETWEEN :start AND :end");
+    $stmt->execute([':start' => $startDate, ':end' => $endDate]);
+    $expenses = $stmt->fetchColumn();
+
     return [
         'income' => $income,
         'expenses' => $expenses,
         'net_income' => $income - $expenses
     ];
 }
-
 // Get all students
 function getStudents($pdo) {
     $stmt = $pdo->query("SELECT id, name, email, phone, address, created_at FROM students ORDER BY name");
@@ -819,5 +813,218 @@ function recordVehicleExpense($pdo, $expense_date, $vehicle_id, $expense_type, $
         $pdo->rollBack();
         return ['success' => false, 'error' => $e->getMessage()];
     }
+}
+
+function getIncomeByCustomer($pdo, $startDate, $endDate) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT 
+                s.name AS student_name,
+                COALESCE(SUM(p.amount), 0) AS total_payments,
+                MAX(p.payment_date) AS last_payment
+            FROM students s
+            LEFT JOIN payments p ON s.id = p.student_id
+            WHERE p.payment_date BETWEEN :start_date AND :end_date
+            GROUP BY s.id
+            ORDER BY total_payments DESC
+        ");
+        $stmt->execute([
+            ':start_date' => $startDate,
+            ':end_date' => $endDate
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting income by customer: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Get Balance Sheet data
+ * 
+ * @param PDO $pdo Database connection
+ * @return array
+ */
+function getBalanceSheetData($pdo) {
+    $data = [
+        'assets' => [],
+        'liabilities' => [],
+        'equity' => [],
+        'total_assets' => 0,
+        'total_liabilities' => 0,
+        'total_equity' => 0,
+        'retained_earnings' => 0,
+        'total_liabilities_equity' => 0
+    ];
+
+    try {
+        // Get all accounts with balances
+        $accounts = getChartOfAccountsWithBalances($pdo);
+        
+        // Categorize accounts
+        foreach ($accounts as $account) {
+            switch ($account['account_type']) {
+                case 'Asset':
+                    $data['assets'][] = [
+                        'account_name' => $account['account_name'],
+                        'balance' => $account['balance']
+                    ];
+                    $data['total_assets'] += $account['balance'];
+                    break;
+                case 'Liability':
+                    $data['liabilities'][] = [
+                        'account_name' => $account['account_name'],
+                        'balance' => $account['balance']
+                    ];
+                    $data['total_liabilities'] += $account['balance'];
+                    break;
+                case 'Equity':
+                case 'Revenue':  // Include revenue in equity
+                    $data['equity'][] = [
+                        'account_name' => $account['account_name'],
+                        'balance' => $account['balance']
+                    ];
+                    $data['total_equity'] += $account['balance'];
+                    break;
+            }
+        }
+        
+        // Calculate retained earnings (net income from beginning of time)
+        $plData = getProfitLossData($pdo, '1970-01-01', date('Y-m-d'));
+        $data['retained_earnings'] = $plData['net_income'];
+        $data['total_equity'] += $data['retained_earnings'];
+        
+        // Calculate total liabilities + equity
+        $data['total_liabilities_equity'] = $data['total_liabilities'] + $data['total_equity'];
+        
+        return $data;
+    } catch (PDOException $e) {
+        error_log("Error getting balance sheet data: " . $e->getMessage());
+        return $data;
+    }
+}
+function getOpenInvoices($pdo) {
+    try {
+        $stmt = $pdo->query("
+            SELECT 
+                i.id,
+                s.name AS student_name,
+                i.invoice_date,
+                i.due_date,
+                i.total_amount,
+                COALESCE(SUM(p.amount), 0) AS paid_amount,
+                (i.total_amount - COALESCE(SUM(p.amount), 0)) AS balance
+            FROM invoices i
+            JOIN students s ON i.student_id = s.id
+            LEFT JOIN payments p ON p.invoice_id = i.id
+            GROUP BY i.id
+            HAVING balance > 0
+            ORDER BY i.due_date ASC
+        ");
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting open invoices: " . $e->getMessage());
+        return [];
+    }
+}
+// functions.php - Add this new function
+function getIncomeByItem($pdo, $startDate, $endDate) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT 
+                COALESCE(p.name, 'Uncategorized') AS category,
+                SUM(ii.quantity) AS total_quantity,
+                SUM(ii.quantity * ii.unit_price) AS total_income,
+                AVG(ii.unit_price) AS average_price
+            FROM invoice_items ii
+            JOIN invoices inv ON ii.invoice_id = inv.id
+            JOIN items i ON ii.item_id = i.id
+            LEFT JOIN items p ON i.parent_id = p.id
+            WHERE inv.invoice_date BETWEEN :start_date AND :end_date
+            GROUP BY category
+            ORDER BY total_income DESC
+        ");
+        $stmt->execute([
+            ':start_date' => $startDate,
+            ':end_date' => $endDate
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting income by category: " . $e->getMessage());
+        return [];
+    }
+}
+function getIncomeByCategory($pdo, $startDate, $endDate) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT 
+                COALESCE(p.id, i.id) AS category_id,
+                COALESCE(p.name, i.name) AS category_name,
+                SUM(ii.quantity) AS total_quantity,
+                SUM(ii.quantity * ii.unit_price) AS total_income,
+                AVG(ii.unit_price) AS average_price,
+                CASE 
+                    WHEN COUNT(DISTINCT c.id) > 0 THEN 1 
+                    ELSE 0 
+                END AS has_subcategories
+            FROM invoice_items ii
+            JOIN invoices inv ON ii.invoice_id = inv.id
+            JOIN items i ON ii.item_id = i.id
+            LEFT JOIN items p ON i.parent_id = p.id
+            LEFT JOIN items c ON c.parent_id = i.id
+            WHERE inv.invoice_date BETWEEN :start_date AND :end_date
+            GROUP BY COALESCE(p.id, i.id), COALESCE(p.name, i.name)
+            ORDER BY category_name
+        ");
+        $stmt->execute([
+            ':start_date' => $startDate,
+            ':end_date' => $endDate
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting income by category: " . $e->getMessage());
+        return [];
+    }
+}
+
+// Get subcategories for a specific category
+function getSubcategories($pdo, $categoryId, $startDate, $endDate) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT 
+                i.id,
+                i.name,
+                SUM(ii.quantity) AS total_quantity,
+                SUM(ii.quantity * ii.unit_price) AS total_income,
+                AVG(ii.unit_price) AS average_price
+            FROM invoice_items ii
+            JOIN invoices inv ON ii.invoice_id = inv.id
+            JOIN items i ON ii.item_id = i.id
+            WHERE i.parent_id = :category_id
+            AND inv.invoice_date BETWEEN :start_date AND :end_date
+            GROUP BY i.id, i.name
+            ORDER BY i.name
+        ");
+        $stmt->execute([
+            ':category_id' => $categoryId,
+            ':start_date' => $startDate,
+            ':end_date' => $endDate
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting subcategories: " . $e->getMessage());
+        return [];
+    }
+}
+
+function getStudentsByClass($pdo, $class_id) {
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE class_id = ?");
+    $stmt->execute([$class_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getClasses($pdo) {
+    $stmt = $pdo->query("SELECT * FROM classes");
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 ?>

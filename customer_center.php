@@ -7,6 +7,13 @@ include 'header.php';
 // Get all items
 $items = getItemsWithSubItems($pdo);
 
+// Retrieve existing classes
+$classes = [];
+$stmt = $pdo->query("SELECT id, name FROM classes");
+if ($stmt) {
+    $classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 // Handle item deletion
 if (isset($_POST['delete_item'])) {
 try {
@@ -43,10 +50,11 @@ try {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['addStudent'])) {
 $name = trim($_POST['name']);
 $email = trim($_POST['email']);
+$class_id = !empty($_POST['class_id']) ? intval($_POST['class_id']) : null;
 $phone = trim($_POST['phone']);
 $address = trim($_POST['address']);
 
-$stmt = $pdo->prepare("INSERT INTO students (name, email, phone, address) VALUES (?, ?, ?, ?)");
+$stmt = $pdo->prepare("INSERT INTO students (name, email, class_id, phone, address) VALUES (?, ?, ?, ?)");
 if ($stmt->execute([$name, $email, $phone, $address])) {
     echo "<script>
         showAlert('Student added successfully!');
@@ -84,10 +92,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editStudent'])) {
 $student_id = intval($_POST['student_id']);
 $name = trim($_POST['name']);
 $email = trim($_POST['email']);
+$class_id = !empty($_POST['class_id']) ? intval($_POST['class_id']) : null;
 $phone = trim($_POST['phone']);
 $address = trim($_POST['address']);
 
-$stmt = $pdo->prepare("UPDATE students SET name = ?, email = ?, phone = ?, address = ? WHERE id = ?");
+$stmt = $pdo->prepare("UPDATE students SET name = ?, email = ?, class_id = ?, phone = ?, address = ? WHERE id = ?");
 if ($stmt->execute([$name, $email, $phone, $address, $student_id])) {
     echo "<script>showAlert('Student updated successfully!');</script>";
 } else {
@@ -274,18 +283,18 @@ if (isset($_GET['view_student'])) {
 
     if ($studentDetail) {
         // Replace the invoice query with:
-    $stmt = $pdo->prepare("
-        SELECT 
-            i.id,
-            i.id AS invoice_number,
-            i.invoice_date,
-            i.due_date,
-            i.total_amount,
-            i.paid_amount,
-            i.balance
-        FROM invoices i
-        WHERE i.student_id = ?
-    ");
+        $stmt = $pdo->prepare("
+            SELECT 
+                i.id,
+                i.id AS invoice_number,
+                i.invoice_date,
+                i.due_date,
+                i.total_amount,
+                i.paid_amount,
+                i.balance
+            FROM invoices i
+            WHERE i.student_id = ?
+        ");
         $stmt->execute([$studentId]);
         $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
@@ -326,21 +335,16 @@ if (isset($_GET['view_student'])) {
                 'date' => $payment['date'] ?? '',
                 'type' => 'payment',
                 'description' => 'Payment for Invoice #' . ($payment['invoice_id'] ?? '') . ' (' . ($payment['payment_method'] ?? '') . ')',
-                'amount' => $payment['amount'] ?? 0
+                'amount' => $payment['amount'] ?? 0,
+                'receipt_id' => $payment['receipt_id'] ?? null,
+                'receipt_number' => $payment['receipt_number'] ?? null
             ];
         }
-
-        if ($trans['type'] === 'payment'): ?>
-        <a href="javascript:void(0);" onclick="viewReceipt(<?= $trans['receipt_id'] ?>)">
-            Receipt #<?= $trans['receipt_number'] ?>
-        </a>
-        <?php endif;
 
         // Calculate balances
         usort($allTransactions, function($a, $b) {
             return strtotime($a['date']) - strtotime($b['date']);
         });
-        $studentTransactions = $allTransactions;
 
         // Initialize invoice balances using the calculated balances from the SQL query
         $invoiceBalances = [];
@@ -379,23 +383,22 @@ if (isset($_GET['view_student'])) {
         });
 
         $studentTransactions = $allTransactions;
-        if (isset($_GET['view_student'])) {
-            $studentId = intval($_GET['view_student']);
-            // Re-fetch invoices and payments to get updated amounts
-            $stmt = $pdo->prepare("
-                SELECT 
-                    i.id,
-                    i.id AS invoice_number,
-                    i.invoice_date,
-                    i.due_date,
-                    i.total_amount,
-                    i.paid_amount,
-                    i.balance  -- Use the existing generated column
-                FROM invoices i
-                WHERE i.student_id = ?
-            ");
-            $stmt->execute([$studentId]);
-            $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Re-fetch invoices and payments to get updated amounts
+        $stmt = $pdo->prepare("
+            SELECT 
+                i.id,
+                i.id AS invoice_number,
+                i.invoice_date,
+                i.due_date,
+                i.total_amount,
+                i.paid_amount,
+                i.balance  -- Use the existing generated column
+            FROM invoices i
+            WHERE i.student_id = ?
+        ");
+        $stmt->execute([$studentId]);
+        $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         // Recalculate totals
         $totalInvoiced = array_sum(array_column($invoices, 'total_amount'));
@@ -403,15 +406,19 @@ if (isset($_GET['view_student'])) {
         $studentBalance = $totalInvoiced - $totalPaid;
     }
 }
-}
-
-
 
 // Retrieve existing invoices and students
 $invoices = getInvoices($pdo);
 $students = getStudents($pdo);
+
+$templates = [];
+$stmt = $pdo->query("SELECT * FROM invoice_templates");
+if ($stmt) {
+    $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
 ?>
-<h2>Customer Center</h2>
+
+<h1>Customer Center</h1>
 <div class="tab-container">
 <div class="tabs">
     <button class="tab-link <?php echo !isset($_GET['view_student']) ? 'active' : ''; ?>" onclick="openTab(event, 'students')">Students</button>
@@ -497,7 +504,7 @@ $students = getStudents($pdo);
             </div>
         </div>
         <div class="student-actions">
-            <button class="btn-primary" onclick="window.location.href='create_invoice.php?student_id=<?php echo $studentDetail['id']; ?>'">Create Invoice</button>
+            <a href="create_invoice.php?student_id=<?php echo $studentDetail['id']; ?>" class="btn-primary">Create Invoice</a>
             <button class="btn-primary" onclick="openReceivePaymentTab(<?php echo $studentDetail['id']; ?>)">Receive Payment</button>
         </div>
     </div>
@@ -591,15 +598,23 @@ $students = getStudents($pdo);
     <div class="card">
         <h3>Invoices</h3>
         <div class="table-actions">
-            <a href="create_invoice.php" class="btn-primary">Create New Invoice</a>
-            <button class="btn-secondary" id="downloadSelected">Download Selected</button>
-            <button class="btn-secondary" id="sendWhatsApp">Send via WhatsApp</button>
+            <a href="create_invoice.php" class="btn-add" style="display: inline-flex; align-items: center; gap: 8px;">
+                <i class="fas fa-plus"></i> Create Invoice
+            </a>
+            <button class="btn-secondary" id="downloadSelected">
+                <i class="fas fa-download"></i> Download Selected
+            </button>
+            <button class="btn-accent" id="sendWhatsApp">
+                <i class="fab fa-whatsapp"></i> Send via WhatsApp
+            </button>
         </div>
         <form id="invoiceSelectionForm">
             <table>
                 <thead>
                     <tr>
-                        <th><!-- Checkbox column --></th>
+                        <th>
+                            <input type="checkbox" id="selectAllInvoices" style="margin-right: 5px;">
+                        </th>
                         <th>ID</th>
                         <th>Student</th>
                         <th>Date</th>
@@ -636,8 +651,18 @@ $students = getStudents($pdo);
                             ?>
                         </td>
                         <td>
-                            <a href="view_invoice.php?id=<?php echo $inv['id']; ?>" class="btn-small">View</a>
-                            <a href="download_invoice.php?id=<?php echo $inv['id']; ?>" class="btn-small">Download</a>
+                            <div class="action-buttons">
+                                <a href="view_invoice.php?id=<?php echo $inv['id']; ?>" 
+                                   class="btn-icon btn-view" 
+                                   data-tooltip="View Invoice">
+                                    <i class="fas fa-eye"></i>
+                                </a>
+                                <a href="download_invoice.php?id=<?php echo $inv['id']; ?>" 
+                                   class="btn-icon btn-download" 
+                                   data-tooltip="Download Invoice">
+                                    <i class="fas fa-download"></i>
+                                </a>
+                            </div>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -649,56 +674,86 @@ $students = getStudents($pdo);
 
 <!-- Items Tab -->
 <div id="items" class="tab-content">
-    <div class="items-list">
-        <?php foreach ($items as $item): ?>
-            <div class="item-card">
-                <div class="item-header">
-                    <h3><?php echo htmlspecialchars($item['name']); ?></h3>
-                    <div class="item-actions">
-                        <button class="btn-edit" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($item)); ?>)">
-                            Edit
-                        </button>
-                        <form method="post" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this item?');">
-                            <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
-                            <button type="submit" name="delete_item" class="btn-delete">Delete</button>
-                        </form>
+    <div class="card">
+        <h3>Items & Services</h3>
+        <div class="table-actions">
+            <button class="btn-add" onclick="openAddItemModal()">
+                <i class="fas fa-plus"></i> Add New Item
+            </button>
+        </div>
+        
+        <div class="items-grid">
+            <?php foreach ($items as $item): ?>
+                <div class="item-card">
+                    <div class="item-header">
+                        <h3 class="item-title"><?php echo htmlspecialchars($item['name']); ?></h3>
+                        <div class="item-actions">
+                            <button class="btn-icon btn-edit" 
+                                    onclick="openEditModal(<?php echo htmlspecialchars(json_encode($item)); ?>)"
+                                    data-tooltip="Edit Item">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <form method="post" onsubmit="return confirm('Are you sure you want to delete this item?');">
+                                <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
+                                <button type="submit" name="delete_item" class="btn-icon btn-delete" data-tooltip="Delete Item">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                </div>
-                <div class="item-details">
-                    <p><strong>Price:</strong> $<?php echo number_format($item['price'], 2); ?></p>
-                    <?php if (!empty($item['description'])): ?>
-                        <p><strong>Description:</strong> <?php echo htmlspecialchars($item['description']); ?></p>
+                
+                    <div class="item-details">
+                        <div class="item-property">
+                            <span class="item-label">Price:</span>
+                            <span class="item-value">$<?php echo number_format($item['price'], 2); ?></span>
+                        </div>
+                        <?php if (!empty($item['description'])): ?>
+                            <div class="item-property">
+                                <span class="item-label">Description:</span>
+                                <span class="item-value"><?php echo htmlspecialchars($item['description']); ?></span>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <?php if (!empty($item['sub_items'])): ?>
+                        <div class="sub-items-section">
+                            <h4 class="sub-items-title">Sub-items</h4>
+                            <div class="sub-items-grid">
+                                <?php foreach ($item['sub_items'] as $sub_item): ?>
+                                    <div class="sub-item-card">
+                                        <div class="sub-item-header">
+                                            <h4 class="sub-item-title"><?php echo htmlspecialchars($sub_item['name']); ?></h4>
+                                            <div class="item-actions">
+                                                <button class="btn-icon btn-edit" 
+                                                        onclick="openEditModal(<?php echo htmlspecialchars(json_encode($sub_item)); ?>)"
+                                                        data-tooltip="Edit Sub-item">
+                                                    <i class="fas fa-edit"></i>
+                                                </button>
+                                                <form method="post" onsubmit="return confirm('Are you sure you want to delete this item?');">
+                                                    <input type="hidden" name="item_id" value="<?php echo $sub_item['id']; ?>">
+                                                    <button type="submit" name="delete_item" class="btn-icon btn-delete" data-tooltip="Delete Sub-item">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                        <div class="sub-item-details">
+                                            <span class="item-label">Price:</span>
+                                            <span class="item-value">$<?php echo number_format($sub_item['price'], 2); ?></span>
+                                            
+                                            <?php if (!empty($sub_item['description'])): ?>
+                                                <span class="item-label">Description:</span>
+                                                <span class="item-value"><?php echo htmlspecialchars($sub_item['description']); ?></span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
                     <?php endif; ?>
                 </div>
-                <?php if (!empty($item['sub_items'])): ?>
-                    <div class="sub-items">
-                        <h4>Sub-items:</h4>
-                        <?php foreach ($item['sub_items'] as $sub_item): ?>
-                            <div class="sub-item">
-                                <div class="sub-item-header">
-                                    <h5><?php echo htmlspecialchars($sub_item['name']); ?></h5>
-                                    <div class="sub-item-actions">
-                                        <button class="btn-edit" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($sub_item)); ?>)">
-                                            Edit
-                                        </button>
-                                        <form method="post" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this item?');">
-                                            <input type="hidden" name="item_id" value="<?php echo $sub_item['id']; ?>">
-                                            <button type="submit" name="delete_item" class="btn-delete">Delete</button>
-                                        </form>
-                                    </div>
-                                </div>
-                                <div class="sub-item-details">
-                                    <p><strong>Price:</strong> $<?php echo number_format($sub_item['price'], 2); ?></p>
-                                    <?php if (!empty($sub_item['description'])): ?>
-                                        <p><strong>Description:</strong> <?php echo htmlspecialchars($sub_item['description']); ?></p>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
-            </div>
-        <?php endforeach; ?>
+            <?php endforeach; ?>
+        </div>
     </div>
 </div>
 
@@ -1009,6 +1064,17 @@ $students = getStudents($pdo);
                     <input type="text" name="name" id="name" required class="modal-input">
                 </div>
                 <div class="form-group">
+                    <label for="class_id">Class</label>
+                    <select name="class_id" id="class_id" class="modal-input">
+                        <option value="">Select Class</option>
+                        <?php foreach ($classes as $class): ?>
+                            <option value="<?php echo $class['id']; ?>">
+                                <?php echo htmlspecialchars($class['name']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="email">Email:</label>
                     <input type="email" name="email" id="email" required class="modal-input">
                 </div>
@@ -1043,6 +1109,17 @@ $students = getStudents($pdo);
                 <div class="form-group">
                     <label for="edit_name">Name:</label>
                     <input type="text" name="name" id="edit_name" required class="modal-input">
+                </div>
+                <div class="form-group">
+                    <label for="edit_class_id">Class</label>
+                    <select name="class_id" id="edit_class_id" class="modal-input">
+                        <option value="">Select Class</option>
+                        <?php foreach ($classes as $class): ?>
+                            <option value="<?php echo $class['id']; ?>">
+                                <?php echo htmlspecialchars($class['name']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label for="edit_email">Email:</label>
@@ -1277,11 +1354,15 @@ const date = new Date(dateString);
 return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// In customer_center.php
+// FIXED PAYMENT HANDLER
 function handlePaymentSubmit(event) {
   event.preventDefault();
   
-  const formData = new FormData(document.getElementById('paymentForm'));
+  // Fixed: Get the form and the submit button using form ID
+  const form = document.getElementById('paymentForm');
+  const submitBtn = form.querySelector('button[type="submit"]');
+  
+  const formData = new FormData(form);
   const total = parseFloat(document.getElementById('totalPayment').textContent.replace('$', ''));
   
   if (total <= 0) {
@@ -1290,7 +1371,6 @@ function handlePaymentSubmit(event) {
   }
 
   // Show loading indicator
-  const submitBtn = event.target.querySelector('button[type="submit"]');
   submitBtn.disabled = true;
   submitBtn.textContent = 'Processing...';
 
@@ -1310,28 +1390,16 @@ function handlePaymentSubmit(event) {
         payment_method: document.getElementById('payment_method').value,
         memo: document.getElementById('memo').value
       });
-      const footer = `
-      <div class="form-actions">
-                <button class="btn-primary" onclick="printReceipt()">Print Receipt</button>
-                <button class="btn-secondary" onclick="closeReceiptModal()">Close</button>
-                <button class="btn-view" onclick="openReceiptsTab()">View in Receipts Tab</button>
-            </div>
-        `;
-      document.getElementById('receiptContent').insertAdjacentHTML('beforeend', footer);
       
       // Reset form and reload data
-      document.getElementById('paymentForm').reset();
+      form.reset();
       loadUnpaidInvoices();
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Record Payment';
-      
-      // Optionally, you can redirect to the receipts tab
-      openTab(event, 'receipts');
     } else {
       showAlert('Error: ' + (data.error || 'Payment failed'));
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Record Payment';
     }
+    // Re-enable button regardless of success
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Record Payment';
   })
   .catch(error => {
     showAlert('Network error: ' + error.message);

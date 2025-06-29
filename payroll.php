@@ -341,7 +341,355 @@ $stmt = $pdo->prepare("SELECT DISTINCT department FROM employees WHERE status = 
 $stmt->execute();
 $departments = $stmt->fetchAll(PDO::FETCH_COLUMN);
 ?>
-<h2>School Payroll Management System</h2>
+
+<style>
+/* Modern Design Styles to match reports.php */
+:root {
+    --primary: #2c3e50;
+    --secondary: #3498db;
+    --accent: #1abc9c;
+    --light: #ecf0f1;
+    --dark: #34495e;
+    --success: #2ecc71;
+    --warning: #f39c12;
+    --danger: #e74c3c;
+    --card-bg: #ffffff;
+    --border: #dfe6e9;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+.payroll-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.summary-card {
+    background: var(--card-bg);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+    border-top: 4px solid var(--secondary);
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.3s ease;
+}
+
+.summary-card:hover {
+    transform: translateY(-5px);
+}
+
+.summary-card h4 {
+    font-size: 16px;
+    color: var(--dark);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.summary-card .amount {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+.tab-container {
+    background: var(--card-bg);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    margin-bottom: 30px;
+}
+
+.tabs {
+    display: flex;
+    background: var(--light);
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.tab-link {
+    flex: 1;
+    padding: 12px 20px;
+    text-align: center;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--dark);
+    background: transparent;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-width: 150px;
+    margin: 4px;
+}
+
+.tab-link:hover {
+    background: rgba(255, 255, 255, 0.7);
+}
+
+.tab-link.active {
+    background: var(--card-bg);
+    color: var(--secondary);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+}
+
+.tab-content {
+    padding: 25px;
+    display: none;
+}
+
+.card {
+    background: var(--card-bg);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    padding: 25px;
+    margin-bottom: 25px;
+}
+
+.card h3 {
+    color: var(--primary);
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--border);
+}
+
+.filter-section {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.form-control {
+    padding: 10px 15px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 15px;
+    width: 100%;
+    background: var(--light);
+}
+
+.btn {
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border: none;
+    font-size: 15px;
+}
+
+.btn-primary {
+    background: var(--secondary);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #2980b9;
+}
+
+.btn-secondary {
+    background: var(--dark);
+    color: white;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+.btn-edit {
+    background: var(--warning);
+    color: white;
+}
+
+.btn-delete {
+    background: var(--danger);
+    color: white;
+}
+
+.table-container {
+    overflow-x: auto;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    margin-top: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    min-width: 800px;
+}
+
+table th {
+    background: var(--primary);
+    color: white;
+    padding: 14px 18px;
+    text-align: left;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+
+table td {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    color: var(--dark);
+}
+
+table tr:last-child td {
+    border-bottom: none;
+}
+
+table tr:nth-child(even) {
+    background-color: #f9fafb;
+}
+
+table tr:hover {
+    background-color: #f1f9ff;
+}
+
+.badge {
+    padding: 4px 10px;
+    border-radius: 30px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+.badge-monthly { background: rgba(46, 204, 113, 0.15); color: var(--success); }
+.badge-hourly { background: rgba(52, 152, 219, 0.15); color: var(--secondary); }
+.badge-daily { background: rgba(155, 89, 182, 0.15); color: #9b59b6; }
+
+.form-section {
+    margin-bottom: 25px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.form-group {
+    margin-bottom: 18px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--dark);
+}
+
+.deduction-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 10px;
+    align-items: center;
+}
+
+.calculated-amount {
+    font-weight: 600;
+    color: var(--primary);
+    min-width: 100px;
+    text-align: right;
+}
+
+/* Modal styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    margin: 5% auto;
+    padding: 20px;
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    width: 90%;
+    max-width: 1200px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--border);
+}
+
+.close {
+    font-size: 28px;
+    cursor: pointer;
+}
+
+.employee-modal-tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.employee-modal-tab {
+    padding: 10px 20px;
+    background: var(--light);
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.employee-modal-tab.active {
+    background: var(--secondary);
+    color: white;
+}
+
+.employee-search {
+    width: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 20px;
+}
+
+.btn-group {
+    display: flex;
+    gap: 8px;
+}
+
+@media (max-width: 768px) {
+    .tabs {
+        flex-direction: column;
+    }
+    
+    .tab-link {
+        width: 100%;
+        margin: 4px 0;
+    }
+    
+    .deduction-controls {
+        grid-template-columns: 1fr;
+    }
+    
+    .filter-section {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+</style>
+
+<h1>School Payroll Management System</h1>
 <!-- Payroll Summary -->
 <div class="payroll-summary">
     <div class="summary-card">

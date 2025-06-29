@@ -1,6 +1,4 @@
 <?php
-// header.php: Enhanced professional header for School Finance System
-
 // Detect current page for body class
 $pageClass = '';
 if (basename($_SERVER['PHP_SELF']) == 'index.php') {
@@ -158,9 +156,10 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
                 <div class="user-info">
                     <div class="user-avatar">AD</div>
                     <div class="user-details">
-                        <div style="font-weight: 500; font-size: 0.9rem;">Admin User</div>
-                        <div style="font-size: 0.8rem; opacity: 0.8;">Administrator</div>
+                        <div class="user-name">Admin User</div>
+                        <div class="user-role">Administrator</div>
                     </div>
+                    <i class="fas fa-chevron-down user-dropdown"></i>
                 </div>
             </div>
         </div>
