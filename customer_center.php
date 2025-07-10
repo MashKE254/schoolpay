@@ -1,1820 +1,723 @@
 <?php
-// customer_center.php - Customer Center
-require 'config.php';
-require 'functions.php';
-include 'header.php';
+// customer_center.php - Multi-Tenant Customer Center with Dynamic Class Creation & Audit Trail
 
-// Get all items
-$items = getItemsWithSubItems($pdo);
+// --- BLOCK 1: SETUP & PRE-PROCESSING ---
+// This logic must run before any HTML is outputted to allow for header redirects.
+require_once 'config.php';
+require_once 'functions.php';
 
-// Retrieve existing classes
-$classes = [];
-$stmt = $pdo->query("SELECT id, name FROM classes");
-if ($stmt) {
-    $classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Start session here because we need it for redirects before header.php is included.
+if (session_status() == PHP_SESSION_NONE) {
+    session_start();
 }
 
-// Handle item deletion
-if (isset($_POST['delete_item'])) {
-try {
-    deleteItem($pdo, $_POST['item_id']);
-    $success = "Item deleted successfully.";
-    // Refresh items list
-    $items = getItemsWithSubItems($pdo);
-} catch (PDOException $e) {
-    $error = "Error deleting item: " . $e->getMessage();
+// Check for login status and get school_id
+if (!isset($_SESSION['school_id']) || !isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit();
 }
-}
+$school_id = $_SESSION['school_id'];
+$user_id = $_SESSION['user_id'];
 
-// Handle item update
-if (isset($_POST['update_item'])) {
-try {
-    updateItem(
-        $pdo,
-        $_POST['item_id'],
-        $_POST['name'],
-        $_POST['price'],
-        $_POST['description'],
-        $_POST['parent_id'] ?: null,
-        $_POST['item_type']
-    );
-    $success = "Item updated successfully.";
-    // Refresh items list
-    $items = getItemsWithSubItems($pdo);
-} catch (PDOException $e) {
-    $error = "Error updating item: " . $e->getMessage();
-}
-}
 
-// Process form submission for adding a new student
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['addStudent'])) {
-$name = trim($_POST['name']);
-$email = trim($_POST['email']);
-$class_id = !empty($_POST['class_id']) ? intval($_POST['class_id']) : null;
-$phone = trim($_POST['phone']);
-$address = trim($_POST['address']);
+// --- BLOCK 2: ALL FORM & ACTION HANDLING ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action_taken = false;
+    $active_tab = 'students'; // Default tab unless changed by an action
 
-$stmt = $pdo->prepare("INSERT INTO students (name, email, class_id, phone, address) VALUES (?, ?, ?, ?)");
-if ($stmt->execute([$name, $email, $phone, $address])) {
-    echo "<script>
-        showAlert('Student added successfully!');
+    // --- Item Management ---
+    if (isset($_POST['add_item'])) {
+        $action_taken = true;
+        $active_tab = 'items';
+        $parent_id = !empty($_POST['parent_id']) ? intval($_POST['parent_id']) : null;
+        $item_type = $parent_id ? 'child' : 'parent';
+        $item_id = createItem($pdo, $school_id, $_POST['name'], $_POST['price'], $_POST['description'], $parent_id, $item_type);
         
-        // Refresh dashboard if it's open in another tab
-        if (window.opener && !window.opener.closed) {
-            try {
-                window.opener.refreshDashboardData();
-            } catch(e) {
-                console.log('Could not refresh dashboard in parent window');
-            }
-        }
-        
-        // Or store flag in localStorage
-        localStorage.setItem('dashboard_needs_refresh', 'true');
-    </script>";
-} else {
-    echo "<script>showAlert('Error adding student.');</script>";
-}
-}
-
-// Process delete student request
-if (isset($_GET['delete_student'])) {
-$student_id = intval($_GET['delete_student']);
-$stmt = $pdo->prepare("DELETE FROM students WHERE id = ?");
-if ($stmt->execute([$student_id])) {
-    echo "<script>showAlert('Student deleted successfully!');</script>";
-} else {
-    echo "<script>showAlert('Error deleting student.');</script>";
-}
-}
-
-// Process edit student request
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editStudent'])) {
-$student_id = intval($_POST['student_id']);
-$name = trim($_POST['name']);
-$email = trim($_POST['email']);
-$class_id = !empty($_POST['class_id']) ? intval($_POST['class_id']) : null;
-$phone = trim($_POST['phone']);
-$address = trim($_POST['address']);
-
-$stmt = $pdo->prepare("UPDATE students SET name = ?, email = ?, class_id = ?, phone = ?, address = ? WHERE id = ?");
-if ($stmt->execute([$name, $email, $phone, $address, $student_id])) {
-    echo "<script>showAlert('Student updated successfully!');</script>";
-} else {
-    echo "<script>showAlert('Error updating student.');</script>";
-}
-}
-
-// Process payment submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['process_payment'])) {
-    try {
-        $student_id = intval($_POST['student_id']);
-        $payment_date = $_POST['payment_date'];
-        $payment_method = $_POST['payment_method'];
-        $memo = trim($_POST['memo']);
-        $invoice_ids = $_POST['invoice_ids'] ?? [];
-        $payment_amounts = $_POST['payment_amounts'] ?? [];
-
-        $pdo->beginTransaction();
-
-        foreach ($invoice_ids as $index => $invoice_id) {
-            $amount = floatval($payment_amounts[$index]);
-            $invoice_id = intval($invoice_id);
-
-            if ($amount > 0) {
-                // Insert payment
-                $stmt = $pdo->prepare("INSERT INTO payments (invoice_id, student_id, payment_date, amount, payment_method, memo) 
-                                       VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$invoice_id, $student_id, $payment_date, $amount, $payment_method, $memo]);
-
-            }
-        }
-
-        $pdo->commit();
-        echo "<script>showAlert('Payment recorded successfully!'); window.location.href = 'customer_center.php?view_student=' + $student_id;</script>";
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        echo "<script>showAlert('Error: " . addslashes($e->getMessage()) . "');</script>";
+        // Audit Log
+        $log_data = ['name' => $_POST['name'], 'price' => $_POST['price'], 'parent_id' => $parent_id];
+        log_audit($pdo, 'CREATE', 'items', $item_id, ['data' => $log_data]);
     }
-}
-
-// Process statement generation
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generateStatements'])) {
-    try {
-        // Get form data
-        $statementType = $_POST['statement_type'];
-        $dateFrom = $_POST['date_from'];
-        $dateTo = $_POST['date_to'];
-        $studentSelection = $_POST['student_selection'];
-        $sortBy = $_POST['sort_by'];
-        $includeZero = isset($_POST['include_zero']);
-        $includeOverdue = isset($_POST['include_overdue']);
-        $includeMessage = isset($_POST['include_message']);
-        $statementMessage = $_POST['statement_message'];
-        $template = $_POST['template'];
-
-        // Get selected students
-        $studentIds = [];
-        if ($studentSelection === 'selected') {
-            $studentIds = $_POST['selected_students'] ?? [];
-        } elseif ($studentSelection === 'class') {
-            $classId = $_POST['class_id'];
-            $stmt = $pdo->prepare("SELECT id FROM students WHERE class_id = ?");
-            $stmt->execute([$classId]);
-            $studentIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        } else { // All students
-            $stmt = $pdo->query("SELECT id FROM students");
-            $studentIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        }
-
-        if (empty($studentIds)) {
-            throw new Exception("No students selected");
-        }
-
-        // Get student data with balances
-        $students = [];
-        $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
-        $sql = "SELECT 
-                    s.id,
-                    s.name,
-                    s.email,
-                    s.address,
-                    COALESCE(SUM(i.total_amount), 0) AS total_invoiced,
-                    COALESCE(SUM(i.paid_amount), 0) AS total_paid,
-                    (COALESCE(SUM(i.total_amount), 0) - COALESCE(SUM(i.paid_amount), 0)) AS balance
-                FROM students s
-                LEFT JOIN invoices i ON s.id = i.student_id
-                WHERE s.id IN ($placeholders)
-                GROUP BY s.id";
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($studentIds);
-        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        // Apply filters
-        $filteredStudents = array_filter($students, function($student) use ($includeZero) {
-            if (!$includeZero && $student['balance'] == 0) return false;
-            return true;
-        });
-
-        // Sort students
-        usort($filteredStudents, function($a, $b) use ($sortBy) {
-            switch ($sortBy) {
-                case 'name': return strcmp($a['name'], $b['name']);
-                case 'id': return $a['id'] - $b['id'];
-                case 'balance': return $b['balance'] - $a['balance'];
-                default: return 0;
-            }
-        });
-
-        // Get transactions for each student
-        foreach ($filteredStudents as &$student) {
-            $stmt = $pdo->prepare("
-                SELECT 
-                    i.id AS invoice_id,
-                    i.invoice_date AS date,
-                    'invoice' AS type,
-                    i.total_amount AS amount,
-                    i.balance,
-                    NULL AS payment_method
-                FROM invoices i
-                WHERE i.student_id = ?
-                AND (i.invoice_date BETWEEN ? AND ?)
-                
-                UNION ALL
-                
-                SELECT 
-                    p.id AS payment_id,
-                    p.payment_date AS date,
-                    'payment' AS type,
-                    p.amount AS amount,
-                    NULL AS balance,
-                    p.payment_method
-                FROM payments p
-                WHERE p.student_id = ?
-                AND (p.payment_date BETWEEN ? AND ?)
-                ORDER BY date
-            ");
-
-            $stmt->execute([
-                $student['id'],
-                $dateFrom,
-                $dateTo,
-                $student['id'],
-                $dateFrom,
-                $dateTo
-            ]);
-            
-            $student['transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-
-        // Generate HTML statement
-        ob_start();
-        include "templates/statement_$template.php";
-        $htmlContent = ob_get_clean();
-
-        // Output PDF or HTML
-        if ($_POST['action'] === 'download') {
-            require_once 'vendor/autoload.php';
-            $dompdf = new Dompdf\Dompdf();
-            $dompdf->loadHtml($htmlContent);
-            $dompdf->render();
-            $dompdf->stream("statements-".date('Ymd').".pdf");
-        } else {
-            echo $htmlContent;
-        }
-        exit();
-
-    } catch (Exception $e) {
-        $error = "Error generating statements: " . $e->getMessage();
-        echo "<script>showAlert('".addslashes($error)."');</script>";
-    }
-}
-
-// Get student detail if viewing single student
-$studentDetail = null;
-$studentTransactions = [];
-if (isset($_GET['view_student'])) {
-    $studentId = intval($_GET['view_student']);
     
-    // Get student details
-    $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
-    $stmt->execute([$studentId]);
-    $studentDetail = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($studentDetail) {
-        // Replace the invoice query with:
-        $stmt = $pdo->prepare("
-            SELECT 
-                i.id,
-                i.id AS invoice_number,
-                i.invoice_date,
-                i.due_date,
-                i.total_amount,
-                i.paid_amount,
-                i.balance
-            FROM invoices i
-            WHERE i.student_id = ?
-        ");
-        $stmt->execute([$studentId]);
-        $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (isset($_POST['update_item'])) {
+        $action_taken = true;
+        $active_tab = 'items';
+        $item_id = intval($_POST['item_id']);
         
-        // Fetch payments
-        $stmt = $pdo->prepare("
-            SELECT 
-                p.id,
-                p.payment_date AS date,
-                p.amount,
-                p.payment_method,
-                p.memo,
-                p.invoice_id,
-                r.id AS receipt_id,
-                r.receipt_number
-            FROM payments p
-            LEFT JOIN payment_receipts r ON p.receipt_id = r.id
-            WHERE p.student_id = ?
-            ORDER BY p.payment_date ASC
-        ");
-        $stmt->execute([$studentId]);
-        $payments = $stmt->fetchAll(PDO::FETCH_ASSOC) ?? [];
+        // Get 'before' state for audit
+        $stmt_old = $pdo->prepare("SELECT * FROM items WHERE id = ? AND school_id = ?");
+        $stmt_old->execute([$item_id, $school_id]);
+        $old_data = $stmt_old->fetch(PDO::FETCH_ASSOC);
 
-        // Build transaction history
-        $allTransactions = [];
-        foreach ($invoices as $invoice) {
-            $allTransactions[] = [
-                'id' => $invoice['id'] ?? 0,
-                'date' => $invoice['invoice_date'] ?? '',
-                'type' => 'invoice',
-                'description' => 'Invoice #' . ($invoice['invoice_number'] ?? ''),
-                'amount' => $invoice['total_amount'] ?? 0,
-                'invoice_balance' => $invoice['balance'] ?? 0
-            ];
-        }
-        foreach ($payments as $payment) {
-            $allTransactions[] = [
-                'id' => $payment['id'] ?? 0,
-                'date' => $payment['date'] ?? '',
-                'type' => 'payment',
-                'description' => 'Payment for Invoice #' . ($payment['invoice_id'] ?? '') . ' (' . ($payment['payment_method'] ?? '') . ')',
-                'amount' => $payment['amount'] ?? 0,
-                'receipt_id' => $payment['receipt_id'] ?? null,
-                'receipt_number' => $payment['receipt_number'] ?? null
-            ];
-        }
+        $parent_id = !empty($_POST['parent_id']) ? intval($_POST['parent_id']) : null;
+        $item_type = $parent_id ? 'child' : 'parent';
+        updateItem($pdo, $item_id, $_POST['name'], $_POST['price'], $_POST['description'], $parent_id, $item_type, $school_id);
+        
+        // Get 'after' state and log
+        $new_data = ['name' => $_POST['name'], 'price' => $_POST['price'], 'description' => $_POST['description'], 'parent_id' => $parent_id];
+        log_audit($pdo, 'UPDATE', 'items', $item_id, ['before' => $old_data, 'after' => $new_data]);
+    }
 
-        // Calculate balances
-        usort($allTransactions, function($a, $b) {
-            return strtotime($a['date']) - strtotime($b['date']);
-        });
+    if (isset($_POST['delete_item'])) {
+        $action_taken = true;
+        $active_tab = 'items';
+        $item_id = intval($_POST['item_id']);
 
-        // Initialize invoice balances using the calculated balances from the SQL query
-        $invoiceBalances = [];
-        foreach ($invoices as $invoice) {
-            $invoiceBalances[$invoice['id']] = $invoice['total_amount'];
-        }
+        // Get data before deleting for audit
+        $stmt_old = $pdo->prepare("SELECT * FROM items WHERE id = ? AND school_id = ?");
+        $stmt_old->execute([$item_id, $school_id]);
+        $old_data = $stmt_old->fetch(PDO::FETCH_ASSOC);
 
-        // Calculate running balances for each transaction
-        $runningTotal = 0;
-        foreach ($allTransactions as &$transaction) {
-            $invoiceId = isset($transaction['invoice_id']) ? $transaction['invoice_id'] : (isset($transaction['id']) ? $transaction['id'] : null);
+        deleteItem($pdo, $item_id, $school_id);
+        log_audit($pdo, 'DELETE', 'items', $item_id, ['data' => $old_data]);
+    }
 
-            if ($transaction['type'] === 'invoice') {
-                $runningTotal += $transaction['amount'];
-            } else if ($transaction['type'] === 'payment') {
-                $runningTotal -= $transaction['amount'];
-                // Reduce the balance for this invoice
-                if (isset($invoiceBalances[$invoiceId])) {
-                    $invoiceBalances[$invoiceId] -= $transaction['amount'];
+    // --- Student Management ---
+    if (isset($_POST['addStudent'])) {
+        $action_taken = true;
+        $active_tab = 'students';
+        $class_id = (isset($_POST['class_id']) && is_numeric($_POST['class_id'])) ? intval($_POST['class_id']) : null;
+        $stmt = $pdo->prepare("INSERT INTO students (school_id, student_id_no, name, email, class_id, phone, address) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$school_id, $_POST['student_id_no'], $_POST['name'], $_POST['email'], $class_id, $_POST['phone'], $_POST['address']]);
+        $student_id = $pdo->lastInsertId();
+
+        // Audit Log
+        $log_data = ['student_id_no' => $_POST['student_id_no'], 'name' => $_POST['name'], 'class_id' => $class_id];
+        log_audit($pdo, 'CREATE', 'students', $student_id, ['data' => $log_data]);
+    }
+
+    if (isset($_POST['editStudent'])) {
+        $action_taken = true;
+        $active_tab = 'students';
+        $student_id = intval($_POST['student_id']);
+
+        // Get 'before' state for audit
+        $stmt_old = $pdo->prepare("SELECT * FROM students WHERE id = ? AND school_id = ?");
+        $stmt_old->execute([$student_id, $school_id]);
+        $old_data = $stmt_old->fetch(PDO::FETCH_ASSOC);
+
+        $class_id = (isset($_POST['class_id']) && is_numeric($_POST['class_id'])) ? intval($_POST['class_id']) : null;
+        $stmt = $pdo->prepare("UPDATE students SET student_id_no = ?, name = ?, email = ?, class_id = ?, phone = ?, address = ? WHERE id = ? AND school_id = ?");
+        $stmt->execute([$_POST['student_id_no'], $_POST['name'], $_POST['email'], $class_id, $_POST['phone'], $_POST['address'], $student_id, $school_id]);
+
+        // Get 'after' state and log
+        $new_data = ['student_id_no' => $_POST['student_id_no'], 'name' => $_POST['name'], 'email' => $_POST['email'], 'class_id' => $class_id, 'phone' => $_POST['phone'], 'address' => $_POST['address']];
+        log_audit($pdo, 'UPDATE', 'students', $student_id, ['before' => $old_data, 'after' => $new_data]);
+    }
+    
+    // --- Payment Processing ---
+    if (isset($_POST['process_payment'])) {
+        $action_taken = true;
+        $active_tab = 'receipts'; // Redirect to receipts tab after payment
+        $student_id_payment = intval($_POST['student_id']);
+        
+        $pdo->beginTransaction();
+        try {
+            // Find or create "Undeposited Funds" account
+            $undeposited_account_id = getUndepositedFundsAccountId($pdo, $school_id);
+            $total_payment = array_sum(array_filter($_POST['payment_amounts'], 'is_numeric'));
+            
+            if ($total_payment > 0) {
+                $receipt_number = 'REC-' . strtoupper(uniqid());
+                
+                // Create the master receipt record
+                $stmt = $pdo->prepare("INSERT INTO payment_receipts (school_id, receipt_number, student_id, payment_date, amount, payment_method, memo, coa_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$school_id, $receipt_number, $student_id_payment, $_POST['payment_date'], $total_payment, $_POST['payment_method'], $_POST['memo'], $undeposited_account_id]);
+                $receiptId = $pdo->lastInsertId();
+
+                // Log the creation of the receipt
+                $log_data = ['receipt_number' => $receipt_number, 'student_id' => $student_id_payment, 'amount' => $total_payment, 'method' => $_POST['payment_method']];
+                log_audit($pdo, 'CREATE', 'payment_receipts', $receiptId, ['data' => $log_data]);
+
+                // Apply payments to individual invoices
+                foreach ($_POST['invoice_ids'] as $index => $invoice_id) {
+                    $amount = floatval($_POST['payment_amounts'][$index]);
+                    if ($amount > 0) {
+                        $stmt = $pdo->prepare("INSERT INTO payments (school_id, invoice_id, student_id, payment_date, amount, payment_method, memo, receipt_id, coa_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->execute([$school_id, $invoice_id, $student_id_payment, $_POST['payment_date'], $amount, $_POST['payment_method'], $_POST['memo'], $receiptId, $undeposited_account_id]);
+                    }
                 }
+                
+                // Update the balance of the Undeposited Funds account
+                updateAccountBalance($pdo, $undeposited_account_id, $total_payment, 'debit', $school_id);
             }
-
-            // Store the current balance for this invoice
-            $transaction['invoice_balance'] = isset($invoiceBalances[$invoiceId]) ? $invoiceBalances[$invoiceId] : 0;
-            $transaction['running_balance'] = $runningTotal;
+            
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            // Store error in session to display after redirect
+            $_SESSION['error_message'] = "Error processing payment: " . $e->getMessage();
         }
+    }
 
-        // Sort transactions by date (newest first) for display
-        usort($allTransactions, function($a, $b) {
-            $dateCompare = strtotime($b['date']) - strtotime($a['date']);
-            // If same date, put invoices before payments
-            if ($dateCompare === 0) {
-                return ($a['type'] === 'invoice') ? -1 : 1;
-            }
-            return $dateCompare;
-        });
-
-        $studentTransactions = $allTransactions;
-        
-        // Re-fetch invoices and payments to get updated amounts
-        $stmt = $pdo->prepare("
-            SELECT 
-                i.id,
-                i.id AS invoice_number,
-                i.invoice_date,
-                i.due_date,
-                i.total_amount,
-                i.paid_amount,
-                i.balance  -- Use the existing generated column
-            FROM invoices i
-            WHERE i.student_id = ?
-        ");
-        $stmt->execute([$studentId]);
-        $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        // Recalculate totals
-        $totalInvoiced = array_sum(array_column($invoices, 'total_amount'));
-        $totalPaid = array_sum(array_column($invoices, 'paid_amount'));
-        $studentBalance = $totalInvoiced - $totalPaid;
+    // Final redirect after any POST action
+    if($action_taken) {
+        header("Location: " . $_SERVER['PHP_SELF'] . "?tab=" . $active_tab);
+        exit();
     }
 }
 
-// Retrieve existing invoices and students
-$invoices = getInvoices($pdo);
-$students = getStudents($pdo);
+// Handle deleting a student via GET request (can be converted to POST for better security)
+if (isset($_GET['delete_student'])) {
+    $student_id_to_delete = intval($_GET['delete_student']);
+    
+    // Get data for audit before deleting
+    $stmt_old = $pdo->prepare("SELECT * FROM students WHERE id = ? AND school_id = ?");
+    $stmt_old->execute([$student_id_to_delete, $school_id]);
+    $old_data = $stmt_old->fetch(PDO::FETCH_ASSOC);
 
-$templates = [];
-$stmt = $pdo->query("SELECT * FROM invoice_templates");
-if ($stmt) {
-    $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Instead of DELETE, we set status to inactive
+    $stmt = $pdo->prepare("UPDATE students SET status = 'inactive' WHERE id = ? AND school_id = ?");
+    $stmt->execute([$student_id_to_delete, $school_id]);
+
+    log_audit($pdo, 'DELETE', 'students', $student_id_to_delete, ['data' => $old_data]);
+
+    header("Location: customer_center.php?tab=students");
+    exit();
 }
+
+// --- BLOCK 3: PAGE DISPLAY SETUP ---
+// Now that all processing is done, we can include the header and start the page.
+require_once 'header.php';
+
+// Display and clear any session-based error messages
+if (isset($_SESSION['error_message'])) {
+    echo '<div class="alert alert-danger">' . htmlspecialchars($_SESSION['error_message']) . '</div>';
+    unset($_SESSION['error_message']);
+}
+
+// --- Data Fetching for Display ---
+$items = getItemsWithSubItems($pdo, $school_id);
+$classes = getClasses($pdo, $school_id);
+$students = getStudents($pdo, $school_id);
+$invoices = getInvoices($pdo, $school_id);
+$all_receipts = getAllReceipts($pdo, $school_id);
+$asset_accounts = getAccountsByType($pdo, $school_id, 'asset');
+
 ?>
+<style>
+    .student-view-container { display: flex; min-height: 600px; }
+    .student-list-panel { width: 40%; min-width: 300px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); padding-right: 10px; }
+    .student-detail-panel { flex-grow: 1; overflow-y: auto; padding-left: 20px; min-width: 300px; }
+    .resizer { width: 10px; cursor: col-resize; background-color: #e9ecef; position: relative; transition: background-color 0.2s; }
+    .resizer:hover { background-color: var(--secondary); }
+    .student-list-panel table tr.active { background-color: #e3f2fd !important; font-weight: bold; }
+    .student-list-panel table tr { cursor: pointer; }
+    #student-detail-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; text-align: center; color: #777; flex-direction: column; padding: 2rem; }
+    #student-detail-content { display: none; }
+    .student-detail-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem; gap: 1rem; flex-wrap: wrap; }
+    .student-info h3 { margin-top: 0; }
+    .student-balance-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 20px; margin-bottom: 2rem; }
+    .balance-card { background: #f8f9fa; padding: 20px; border-radius: 12px; text-align: center; border-top: 4px solid var(--secondary, #3498db); }
+    .balance-card h4 { margin: 0 0 10px 0; color: #6c757d; font-size: 1rem; }
+    .balance-amount { font-size: 1.75rem; font-weight: 700; }
+    .balance-amount.balance-due { color: var(--danger, #e74c3c); }
+    .balance-amount.balance-zero { color: var(--success, #2ecc71); }
+    .create-class-container { display: none; margin-top: 10px; padding: 10px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid var(--border); align-items: center;}
+    .create-class-container input { flex-grow: 1; margin-right: 10px; }
+    .info-section { margin-top: 1rem; }
+    .info-item { display: flex; gap: 8px; margin-bottom: 5px; color: #555; }
+    .info-item .label { font-weight: 600; color: var(--primary); }
+    .items-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
+    .item-card { background: #f8f9fa; border-radius: 12px; border: 1px solid var(--border); }
+    .item-header { padding: 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .item-title { font-size: 1.1rem; color: var(--primary); margin: 0; }
+    .item-details { padding: 15px; }
+    .sub-items-section { padding: 0 15px 15px; }
+    .sub-items-title { font-size: 0.9rem; color: #666; margin-bottom: 10px; border-top: 1px dashed #ccc; padding-top: 10px; }
+    .sub-item-card { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-radius: 8px; }
+    .sub-item-card:nth-child(even) { background-color: #fff; }
+    @media print {
+        body.receipt-modal-active > *:not(#viewReceiptModal) { display: none; }
+        body.receipt-modal-active #viewReceiptModal,
+        body.receipt-modal-active .modal-content { display: block !important; position: absolute; left: 0; top: 0; width: 100%; height: auto; box-shadow: none; border: none; }
+        body.receipt-modal-active .modal-header,
+        body.receipt-modal-active .modal-footer { display: none; }
+    }
+</style>
 
 <h1>Customer Center</h1>
+
 <div class="tab-container">
-<div class="tabs">
-    <button class="tab-link <?php echo !isset($_GET['view_student']) ? 'active' : ''; ?>" onclick="openTab(event, 'students')">Students</button>
-    <button class="tab-link" onclick="openTab(event, 'invoices')">Invoices</button>
-    <button class="tab-link" onclick="openTab(event, 'items')">Items</button>
-    <button class="tab-link" onclick="openTab(event, 'receive_payment')">Receive Payment</button>
-    <button class="tab-link" onclick="openTab(event, 'statements')">Statements</button>
-    <button class="tab-link" onclick="openTab(event, 'receipts')">Receipts</button>
-    <?php if (isset($_GET['view_student']) && $studentDetail): ?>
-    <button class="tab-link active" onclick="openTab(event, 'student_detail')">Student Detail</button>
-    <?php endif; ?>
-</div>
+    <div class="tabs">
+        <button class="tab-link" onclick="openTab(event, 'students')">Students</button>
+        <button class="tab-link" onclick="openTab(event, 'invoices')">Invoices</button>
+        <button class="tab-link" onclick="openTab(event, 'items')">Items & Services</button>
+        <button class="tab-link" onclick="openTab(event, 'receive_payment')">Receive Payment</button>
+        <button class="tab-link" onclick="openTab(event, 'statements')">Statements</button>
+        <button class="tab-link" onclick="openTab(event, 'receipts')">Receipts</button>
+    </div>
 
-<!-- Students Tab -->
-<div id="students" class="tab-content" <?php echo !isset($_GET['view_student']) ? 'style="display: block;"' : ''; ?>>
-    <div class="card">
-        <h3>Students</h3>
-        <div class="table-actions">
-            <button class="btn-add" onclick="openAddModal()">Add New Student</button>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Phone</th>
-                    <th>Address</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($students as $student): ?>
-                    <tr>
-                    <td><?php echo htmlspecialchars($student['id']); ?></td>
-                    <td>
-                        <div class="student-name-container">
-                            <div class="student-avatar">
-                                <?php echo strtoupper(substr($student['name'], 0, 1)); ?>
+    <div id="students" class="tab-content">
+        <div class="student-view-container">
+            <div class="student-list-panel">
+                 <h3>All Students</h3>
+                 <div class="table-actions"><button class="btn-add" onclick="openModal('addStudentModal')"><i class="fas fa-plus"></i> Add Student</button></div>
+                 <table>
+                     <thead><tr><th>Student ID</th><th>Name</th><th>Phone Number</th></tr></thead>
+                     <tbody id="student-list-body">
+                         <?php foreach($students as $student): ?>
+                             <tr onclick="viewStudentDetails(<?php echo $student['id']; ?>, this)">
+                                 <td><?= htmlspecialchars($student['student_id_no']) ?></td>
+                                 <td><?= htmlspecialchars($student['name']) ?></td>
+                                 <td><?= htmlspecialchars($student['phone']) ?></td>
+                             </tr>
+                         <?php endforeach; ?>
+                     </tbody>
+                 </table>
+            </div>
+            <div class="resizer" id="drag-handle"></div>
+            <div class="student-detail-panel" id="student-detail-panel">
+                <div id="student-detail-placeholder"><i class="fas fa-user-circle" style="font-size: 4rem; margin-bottom: 1rem; color: #ccc;"></i><p>Select a student to view details.</p></div>
+                <div id="student-detail-content">
+                    <div class="student-detail-header">
+                        <div class="student-info">
+                            <h3 id="detail-student-name"></h3>
+                            <div class="info-section">
+                                <div class="info-item"><span class="label">Student ID:</span> <span class="value" id="detail-student-id-no"></span></div>
+                                <div class="info-item"><span class="label">Email:</span> <span class="value" id="detail-student-email"></span></div>
+                                <div class="info-item"><span class="label">Phone:</span> <span class="value" id="detail-student-phone"></span></div>
+                                <div class="info-item"><span class="label">Address:</span> <span class="value" id="detail-student-address"></span></div>
                             </div>
-                            <a href="?view_student=<?php echo $student['id']; ?>" class="student-name-link">
-                                <?php echo htmlspecialchars($student['name']); ?>
-                            </a>
-
                         </div>
-                    </td>
-                    <td><?php echo htmlspecialchars($student['email']); ?></td>
-                    <td><?php echo htmlspecialchars($student['phone']); ?></td>
-                    <td><?php echo htmlspecialchars($student['address']); ?></td>
-                    <td>
-                        <button class="btn-edit" onclick="editStudent(<?php echo htmlspecialchars(json_encode($student)); ?>)">Edit</button>
-                        <button class="btn-delete" onclick="deleteStudent(<?php echo $student['id']; ?>)">Delete</button>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+                        <div class="student-actions">
+                            <button class="btn-secondary" id="detail-edit-student-btn"><i class="fas fa-edit"></i> Edit Student</button>
+                            <a href="#" id="detail-create-invoice-btn" class="btn-primary"><i class="fas fa-plus"></i> Create Invoice</a>
+                        </div>
+                    </div>
+                    <div class="student-balance-summary">
+                        <div class="balance-card"><h4 class="balance-label">Current Balance</h4><span id="detail-balance-amount" class="balance-amount"></span></div>
+                        <div class="balance-card"><h4>Total Invoiced</h4><span id="detail-total-invoiced" class="balance-amount"></span></div>
+                        <div class="balance-card"><h4>Total Paid</h4><span id="detail-total-paid" class="balance-amount"></span></div>
+                    </div>
+                    <div class="transaction-history"><h3>Transaction History</h3><table class="transaction-table"><thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead><tbody id="detail-transaction-body"></tbody></table></div>
+                </div>
+            </div>
+        </div>
     </div>
-</div>
 
-<!-- Student Detail Tab -->
-<?php if (isset($_GET['view_student']) && $studentDetail): ?>
-<div id="student_detail" class="tab-content" style="display: block;">
-    <div class="student-detail-header">
-        <div class="back-button">
-            <a href="customer_center.php" class="btn-secondary">← Back to Students</a>
-        </div>
-        <div class="student-info">
-            <h3><?php echo htmlspecialchars($studentDetail['name']); ?></h3>
-            <div class="info-section">
-                <div class="info-item">
-                    <span class="label">Email:</span>
-                    <span class="value"><?php echo htmlspecialchars($studentDetail['email']); ?></span>
-                </div>
-                <div class="info-item">
-                    <span class="label">Phone:</span>
-                    <span class="value"><?php echo htmlspecialchars($studentDetail['phone']); ?></span>
-                </div>
-                <div class="info-item">
-                    <span class="label">Address:</span>
-                    <span class="value"><?php echo htmlspecialchars($studentDetail['address']); ?></span>
-                </div>
-            </div>
-        </div>
-        <div class="student-actions">
-            <a href="create_invoice.php?student_id=<?php echo $studentDetail['id']; ?>" class="btn-primary">Create Invoice</a>
-            <button class="btn-primary" onclick="openReceivePaymentTab(<?php echo $studentDetail['id']; ?>)">Receive Payment</button>
-        </div>
-    </div>
-    
-    <div class="student-balance-summary">
-        <div class="balance-card">
-            <h4>Current Balance</h4>
-            <span class="balance-amount <?php echo $studentBalance > 0 ? 'balance-due' : 'balance-zero'; ?>">
-                $<?php echo number_format(abs($studentBalance), 2); ?>
-            </span>
-            <span class="balance-label">
-                <?php echo $studentBalance > 0 ? 'BALANCE DUE' : ($studentBalance < 0 ? 'CREDIT BALANCE' : 'PAID IN FULL'); ?>
-            </span>
-        </div>
-        <div class="balance-card">
-            <h4>Total Invoiced</h4>
-            <span class="balance-amount">$<?php echo number_format($totalInvoiced, 2); ?></span>
-        </div>
-        <div class="balance-card">
-            <h4>Total Paid</h4>
-            <span class="balance-amount">$<?php echo number_format($totalPaid, 2); ?></span>
-        </div>
-    </div>
-    
-    <div class="transaction-history">
-        <h3>Transaction History</h3>
-        <div class="transaction-filters">
-            <div class="date-range">
-                <label for="from_date">From:</label>
-                <input type="date" id="from_date" name="from_date">
-                <label for="to_date">To:</label>
-                <input type="date" id="to_date" name="to_date">
-                <button class="btn-filter" onclick="filterTransactions()">Filter</button>
-                <button class="btn-reset" onclick="resetFilter()">Reset</button>
-            </div>
-            <div class="transaction-type-filter">
-                <label><input type="checkbox" value="invoice" checked> Invoices</label>
-                <label><input type="checkbox" value="payment" checked> Payments</label>
-            </div>
-        </div>
-        
-        <table class="transaction-table">
-    <thead>
-        <tr>
-            <th>Date</th>
-            <th>Transaction</th>
-            <th>Description</th>
-            <th>Amount</th>
-            <th>Balance</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody>
-        
-        <?php foreach ($studentTransactions as $trans): ?>
-        <tr>
-            <td><?= date('M d, Y', strtotime($trans['date'])) ?></td>
-            <td><?= ucfirst($trans['type']) ?></td>
-            <td>
-                <?php if ($trans['type'] === 'invoice'): ?>
-                    Invoice #<?= $trans['id'] ?? 'N/A' ?>
-                <?php else: ?>
-                    Payment for Invoice #<?= $trans['invoice_id'] ?? 'N/A' ?>
-                <?php endif; ?>
-            </td>
-            <td>$<?= number_format($trans['amount'] ?? 0, 2) ?></td>
-            <td>
-                <?php if ($trans['type'] === 'invoice'): ?>
-                    $<?= number_format($trans['invoice_balance'] ?? 0, 2) ?>
-                <?php else: ?>
-                    -
-                <?php endif; ?>
-            </td>
-            <td>
-                <?php if ($trans['type'] === 'invoice'): ?>
-                    <a href="view_invoice.php?id=<?= $trans['id'] ?>" class="btn-small">View</a>
-                <?php endif; ?>
-            </td>
-        </tr>
-        <?php endforeach; ?>
-    </tbody>
-</table>
-    </tbody>
-</table>
-    </div>
-</div>
-<?php endif; ?>
-
-<!-- Invoices Tab -->
-<div id="invoices" class="tab-content">
-    <div class="card">
-        <h3>Invoices</h3>
-        <div class="table-actions">
-            <a href="create_invoice.php" class="btn-add" style="display: inline-flex; align-items: center; gap: 8px;">
-                <i class="fas fa-plus"></i> Create Invoice
-            </a>
-            <button class="btn-secondary" id="downloadSelected">
-                <i class="fas fa-download"></i> Download Selected
-            </button>
-            <button class="btn-accent" id="sendWhatsApp">
-                <i class="fab fa-whatsapp"></i> Send via WhatsApp
-            </button>
-        </div>
-        <form id="invoiceSelectionForm">
+    <div id="invoices" class="tab-content">
+        <div class="card">
+            <h3>Invoices</h3>
+            <div class="table-actions"><a href="create_invoice.php" class="btn-add"><i class="fas fa-plus"></i> Create Invoice</a></div>
             <table>
-                <thead>
-                    <tr>
-                        <th>
-                            <input type="checkbox" id="selectAllInvoices" style="margin-right: 5px;">
-                        </th>
-                        <th>ID</th>
-                        <th>Student</th>
-                        <th>Date</th>
-                        <th>Due Date</th>
-                        <th>Amount</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
+                <thead><tr><th>ID</th><th>Student</th><th>Date</th><th>Due Date</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
-                    <?php foreach($invoices as $inv): ?>
-                    <tr>
-                        <td>
-                            <input type="checkbox" name="selected_invoices[]" 
-                                   value="<?php echo $inv['id']; ?>" 
-                                   class="invoice-checkbox">
-                        </td>
-                        <td><?php echo htmlspecialchars($inv['id']); ?></td>
-                        <td><?php echo htmlspecialchars($inv['student_name']); ?></td>
-                        <td><?php echo date('M d, Y', strtotime($inv['invoice_date'])); ?></td>
-                        <td><?php echo date('M d, Y', strtotime($inv['due_date'])); ?></td>
-                        <td>$<?php echo number_format($inv['total_amount'] ?? 0, 2); ?></td>
-                        <td>
-                            <?php
-                            $status = 'Draft';
-                            if (isset($inv['paid_amount']) && $inv['paid_amount'] > 0) {
-                                if ($inv['paid_amount'] >= $inv['total_amount']) {
-                                    $status = 'Paid';
-                                } else {
-                                    $status = 'Partially Paid';
-                                }
-                            }
-                            echo $status;
-                            ?>
-                        </td>
-                        <td>
-                            <div class="action-buttons">
-                                <a href="view_invoice.php?id=<?php echo $inv['id']; ?>" 
-                                   class="btn-icon btn-view" 
-                                   data-tooltip="View Invoice">
-                                    <i class="fas fa-eye"></i>
-                                </a>
-                                <a href="download_invoice.php?id=<?php echo $inv['id']; ?>" 
-                                   class="btn-icon btn-download" 
-                                   data-tooltip="Download Invoice">
-                                    <i class="fas fa-download"></i>
-                                </a>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
+                    <?php if (empty($invoices)): ?>
+                        <tr><td colspan="7" class="text-center">No invoices found.</td></tr>
+                    <?php else: ?>
+                        <?php foreach($invoices as $inv): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($inv['id']) ?></td>
+                            <td><?= htmlspecialchars($inv['student_name']) ?></td>
+                            <td><?= date('M d, Y', strtotime($inv['invoice_date'])) ?></td>
+                            <td><?= date('M d, Y', strtotime($inv['due_date'])) ?></td>
+                            <td>$<?= number_format($inv['total_amount'] ?? 0, 2) ?></td>
+                            <td><span class="status-badge status-<?= strtolower(str_replace(' ', '', $inv['status'])) ?>"><?= htmlspecialchars($inv['status']) ?></span></td>
+                            <td>
+                                <a href="view_invoice.php?id=<?= $inv['id'] ?>" class="btn-icon btn-view"><i class="fas fa-eye"></i></a>
+                                <a href="download_invoice.php?id=<?= $inv['id'] ?>" class="btn-icon btn-download"><i class="fas fa-download"></i></a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </tbody>
             </table>
-        </form>
-    </div>
-</div>
-
-<!-- Items Tab -->
-<div id="items" class="tab-content">
-    <div class="card">
-        <h3>Items & Services</h3>
-        <div class="table-actions">
-            <button class="btn-add" onclick="openAddItemModal()">
-                <i class="fas fa-plus"></i> Add New Item
-            </button>
         </div>
-        
-        <div class="items-grid">
-            <?php foreach ($items as $item): ?>
-                <div class="item-card">
-                    <div class="item-header">
-                        <h3 class="item-title"><?php echo htmlspecialchars($item['name']); ?></h3>
-                        <div class="item-actions">
-                            <button class="btn-icon btn-edit" 
-                                    onclick="openEditModal(<?php echo htmlspecialchars(json_encode($item)); ?>)"
-                                    data-tooltip="Edit Item">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <form method="post" onsubmit="return confirm('Are you sure you want to delete this item?');">
-                                <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
-                                <button type="submit" name="delete_item" class="btn-icon btn-delete" data-tooltip="Delete Item">
-                                    <i class="fas fa-trash"></i>
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                
-                    <div class="item-details">
-                        <div class="item-property">
-                            <span class="item-label">Price:</span>
-                            <span class="item-value">$<?php echo number_format($item['price'], 2); ?></span>
-                        </div>
-                        <?php if (!empty($item['description'])): ?>
-                            <div class="item-property">
-                                <span class="item-label">Description:</span>
-                                <span class="item-value"><?php echo htmlspecialchars($item['description']); ?></span>
+    </div>
+    
+    <div id="items" class="tab-content">
+        <div class="card">
+            <h3>Items & Services</h3>
+            <div class="table-actions"><button class="btn-add" onclick="openModal('addItemModal')"><i class="fas fa-plus"></i> Add New Item</button></div>
+            <div class="items-grid">
+                <?php foreach ($items as $item): ?>
+                    <div class="item-card">
+                        <div class="item-header">
+                            <h3 class="item-title"><?= htmlspecialchars($item['name']) ?></h3>
+                            <div class="item-actions">
+                                <button class="btn-icon" onclick="openEditItemModal(<?= htmlspecialchars(json_encode($item)) ?>)"><i class="fas fa-edit"></i></button>
+                                <form method="post" onsubmit="return confirm('Delete this item and all its sub-items?');" style="display:inline;"><input type="hidden" name="item_id" value="<?= $item['id'] ?>"><button type="submit" name="delete_item" class="btn-icon"><i class="fas fa-trash"></i></button></form>
                             </div>
-                        <?php endif; ?>
-                    </div>
-                    
-                    <?php if (!empty($item['sub_items'])): ?>
-                        <div class="sub-items-section">
-                            <h4 class="sub-items-title">Sub-items</h4>
-                            <div class="sub-items-grid">
+                        </div>
+                        <div class="item-details"><div class="item-property"><span class="item-label">Price:</span><span class="item-value">$<?= number_format($item['price'], 2) ?></span></div></div>
+                        <?php if (!empty($item['sub_items'])): ?>
+                            <div class="sub-items-section">
+                                <h4 class="sub-items-title">Sub-items</h4>
                                 <?php foreach ($item['sub_items'] as $sub_item): ?>
                                     <div class="sub-item-card">
-                                        <div class="sub-item-header">
-                                            <h4 class="sub-item-title"><?php echo htmlspecialchars($sub_item['name']); ?></h4>
-                                            <div class="item-actions">
-                                                <button class="btn-icon btn-edit" 
-                                                        onclick="openEditModal(<?php echo htmlspecialchars(json_encode($sub_item)); ?>)"
-                                                        data-tooltip="Edit Sub-item">
-                                                    <i class="fas fa-edit"></i>
-                                                </button>
-                                                <form method="post" onsubmit="return confirm('Are you sure you want to delete this item?');">
-                                                    <input type="hidden" name="item_id" value="<?php echo $sub_item['id']; ?>">
-                                                    <button type="submit" name="delete_item" class="btn-icon btn-delete" data-tooltip="Delete Sub-item">
-                                                        <i class="fas fa-trash"></i>
-                                                    </button>
-                                                </form>
-                                            </div>
+                                        <div>
+                                            <span><?= htmlspecialchars($sub_item['name']) ?></span>
+                                            <strong style="margin-left: 10px;">$<?= number_format($sub_item['price'], 2) ?></strong>
                                         </div>
-                                        <div class="sub-item-details">
-                                            <span class="item-label">Price:</span>
-                                            <span class="item-value">$<?php echo number_format($sub_item['price'], 2); ?></span>
-                                            
-                                            <?php if (!empty($sub_item['description'])): ?>
-                                                <span class="item-label">Description:</span>
-                                                <span class="item-value"><?php echo htmlspecialchars($sub_item['description']); ?></span>
-                                            <?php endif; ?>
+                                        <div class="item-actions">
+                                            <button class="btn-icon" onclick="openEditItemModal(<?= htmlspecialchars(json_encode($sub_item)) ?>)"><i class="fas fa-edit"></i></button>
+                                            <form method="post" onsubmit="return confirm('Delete this sub-item?');" style="display:inline;"><input type="hidden" name="item_id" value="<?= $sub_item['id'] ?>"><button type="submit" name="delete_item" class="btn-icon"><i class="fas fa-trash"></i></button></form>
                                         </div>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            <?php endforeach; ?>
-        </div>
-    </div>
-</div>
-
-<!-- Receive Payment Tab -->
-<div id="receive_payment" class="tab-content">
-    <div class="card">
-        <h3>Receive Payment</h3>
-        <form id="paymentForm" method="post" onsubmit="return handlePaymentSubmit(event)">
-            <input type="hidden" name="process_payment" value="1">
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="student_id">Student</label>
-                    <select name="student_id" id="student_id" required onchange="loadUnpaidInvoices()">
-                        <option value="">Select Student</option>
-                        <?php foreach ($students as $student): ?>
-                            <option value="<?php echo $student['id']; ?>" <?php echo (isset($_GET['view_student']) && $_GET['view_student'] == $student['id']) ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($student['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="payment_date">Payment Date</label>
-                    <input type="date" name="payment_date" id="payment_date" value="<?php echo date('Y-m-d'); ?>" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="payment_method">Payment Method</label>
-                    <select name="payment_method" id="payment_method" required>
-                        <option value="Cash">Cash</option>
-                        <option value="Bank Transfer">Bank Transfer</option>
-                        <option value="Mobile Money">Mobile Money</option>
-                        <option value="Check">Check</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label for="memo">Memo</label>
-                <textarea name="memo" id="memo" rows="2"></textarea>
-            </div>
-            
-            <div class="unpaid-invoices">
-                <h4>Unpaid Invoices</h4>
-                <table id="unpaidInvoicesTable">
-            <thead>
-                <tr>
-                            <th>Invoice #</th>
-                            <th>Date</th>
-                            <th>Due Date</th>
-                            <th>Total Amount</th>
-                            <th>Paid Amount</th>
-                            <th>Balance</th>
-                            <th>Payment Amount</th>
-                </tr>
-            </thead>
-            <tbody>
-                        <!-- Invoices will be loaded here -->
-                    </tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="6" class="text-right"><strong>Total Payment:</strong></td>
-                            <td><strong id="totalPayment">$0.00</strong></td>
-                </tr>
-                    </tfoot>
-        </table>
-            </div>
-            
-            <div class="form-actions">
-                <button type="submit" class="btn-primary">Record Payment</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Statements Tab -->
-<div id="statements" class="tab-content">
-    <div class="card">
-        <h3>Create Statements</h3>
-        <form id="statementForm" method="post">
-            <input type="hidden" name="generateStatements" value="1">
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="statement_type">Statement Type</label>
-                    <select name="statement_type" id="statement_type" required>
-                        <option value="balance_forward">Balance Forward</option>
-                        <option value="open_item">Open Item</option>
-                        <option value="transaction_detail">Transaction Detail</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="statement_date">Statement Date</label>
-                    <input type="date" name="statement_date" id="statement_date" value="<?php echo date('Y-m-d'); ?>" required>
-                </div>
-            </div>
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="student_selection">Student Selection</label>
-                    <select name="student_selection" id="student_selection" required onchange="toggleStudentSelection()">
-                        <option value="all">All Students</option>
-                        <option value="selected">Selected Students</option>
-                        <option value="class">By Class</option>
-                    </select>
-                </div>
-                
-                <div class="form-group" id="class_selection" style="display: none;">
-                    <label for="class_id">Class</label>
-                    <select name="class_id" id="class_id">
-                        <option value="">Select Class</option>
-                        <!-- You would populate this from your classes table -->
-                        <option value="1">Grade 10-A</option>
-                        <option value="2">Grade 10-B</option>
-                        <option value="3">Grade 11-A</option>
-                        <option value="4">Grade 11-B</option>
-                    </select>
-                </div>
-                
-                <div class="form-group" id="student_multi_selection" style="display: none;">
-                    <label for="selected_students">Select Students</label>
-                    <select name="selected_students[]" id="selected_students" multiple style="height: 100px; width: 100%;">
-                        <?php foreach ($students as $student): ?>
-                            <option value="<?php echo $student['id']; ?>">
-                                <?php echo htmlspecialchars($student['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="date_from">Date Range</label>
-                    <div style="display: flex;">
-                        <input type="date" name="date_from" id="date_from" style="margin-right: 10px;">
-                        <input type="date" name="date_to" id="date_to">
+                        <?php endif; ?>
                     </div>
-                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+
+    <div id="receive_payment" class="tab-content">
+        <div class="card">
+            <h3>Receive Payment</h3>
+            <form id="paymentForm" method="post">
+                <input type="hidden" name="process_payment" value="1">
+                <div class="form-group"><label for="student_id_payment">Student</label><select name="student_id" id="student_id_payment" class="form-control" required onchange="loadUnpaidInvoices()"><option value="">Select Student</option><?php foreach ($students as $student): ?><option value="<?= $student['id'] ?>"><?= htmlspecialchars($student['name']) ?></option><?php endforeach; ?></select></div>
                 
-                <div class="form-group">
-                    <label for="show_transactions">Show</label>
-                    <select name="show_transactions" id="show_transactions">
-                        <option value="all">All Transactions</option>
-                        <option value="open">Open Balances Only</option>
-                        <option value="closed">Closed Balances Only</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="sort_by">Sort By</label>
-                    <select name="sort_by" id="sort_by">
-                        <option value="name">Student Name</option>
-                        <option value="id">Student ID</option>
-                        <option value="class">Class</option>
-                        <option value="balance">Balance Amount</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="checkbox-group">
-                <h4>Statement Options</h4>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="include_zero" name="include_zero" checked>
-                    <label for="include_zero">Include students with zero balance</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="include_overdue" name="include_overdue">
-                    <label for="include_overdue">Include overdue amounts column</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="include_message" name="include_message" checked>
-                    <label for="include_message">Include message on statement</label>
-                </div>
-            </div>
-            
-            <div class="form-group" style="margin-top: 15px;">
-                <label for="statement_message">Message to Display on Statement</label>
-                <textarea name="statement_message" id="statement_message" rows="3">Thank you for your prompt payment. Please contact our finance office if you have any questions about your account.</textarea>
-            </div>
-            
-            <h4>Statement Template</h4>
-            <div class="template-options">
-                <div class="template-item" onclick="selectTemplate('standard')">
-                    <input type="radio" name="template" value="standard" id="template_standard" checked>
-                    <label for="template_standard">
-                        <img src="assets/img/template_standard.png" alt="Standard Template" onerror="this.src='/api/placeholder/150/80';">
-                        <div>Standard</div>
-                    </label>
-                </div>
-                <div class="template-item" onclick="selectTemplate('professional')">
-                    <input type="radio" name="template" value="professional" id="template_professional">
-                    <label for="template_professional">
-                        <img src="assets/img/template_professional.png" alt="Professional Template" onerror="this.src='/api/placeholder/150/80';">
-                        <div>Professional</div>
-                    </label>
-                </div>
-                <div class="template-item" onclick="selectTemplate('compact')">
-                    <input type="radio" name="template" value="compact" id="template_compact">
-                    <label for="template_compact">
-                        <img src="assets/img/template_compact.png" alt="Compact Template" onerror="this.src='/api/placeholder/150/80';">
-                        <div>Compact</div>
-                    </label>
-                </div>
-            </div>
-            
-            <div class="preview-area" id="statement_preview">
-                <h3 style="text-align: center;">Statement Preview</h3>
-                <p style="text-align: center; color: #666;">(Select students and generate statements to see preview)</p>
-            </div>
-            
-            <div class="form-actions">
-                <button type="button" class="btn-secondary" onclick="resetForm()">Reset</button>
-                <button type="button" class="btn-secondary" onclick="previewStatement()">Preview</button>
-                <button type="submit" class="btn-primary">Generate Statements</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Receipts Tab -->
-<div id="receipts" class="tab-content">
-    <div class="card">
-        <h3>Payment Receipts</h3>
-        <div class="table-controls">
-            <div class="search-box">
-                <input type="text" id="receiptSearch" placeholder="Search receipts..." onkeyup="searchReceipts()">
-                <button class="btn-search" onclick="searchReceipts()">🔍</button>
-            </div>
-            <div class="filter-controls">
-                <label for="dateFilter">Date Range:</label>
-                <input type="date" id="startDate">
-                <input type="date" id="endDate">
-                <button class="btn-filter" onclick="filterReceipts()">Filter</button>
-            </div>
-        </div>
-        <table id="receiptsTable">
-        <thead>
-            <tr>
-                <th>Receipt #</th>
-                <th>Student</th>
-                <th>Date</th>
-                <th>Amount</th>
-                <th>Payment Method</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php
-            $receipts = getAllReceipts($pdo);
-            foreach ($receipts as $receipt) : ?>
-                <tr data-receipt-id="<?= $receipt['id'] ?>">
-                    <td><?= htmlspecialchars($receipt['receipt_number']) ?></td>
-                    <td><?= htmlspecialchars($receipt['student_name']) ?></td>
-                    <td><?= date('M d, Y', strtotime($receipt['payment_date'])) ?></td>
-                    <td>Ksh <?= number_format($receipt['amount'], 2) ?></td>
-                    <td><?= htmlspecialchars($receipt['payment_method']) ?></td>
-                    <td>
-                        <button class="btn-view" onclick="viewReceipt(<?= $receipt['id'] ?>)">View</button>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
-        <!-- Inside receipts tab content -->
-        <div class="pagination">
-            <button id="prevPage" class="btn-pagination">Previous</button>
-            <span id="currentPage">1</span>
-            <button id="nextPage" class="btn-pagination">Next</button>
-        </div>
-    </div>
-</div>
-</div>
-
-<!-- Updated Receipt Modal -->
-<div id="receiptModal" class="modal" style="display: none;">
-    <div class="modal-content" style="max-width: 700px;">
-        <div class="modal-header">
-            <h3>Payment Receipt</h3>
-            <span class="close" onclick="closeReceiptModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <div id="receiptContent" class="receipt-container"></div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn-primary" onclick="printReceipt()">Print Receipt</button>
-            <button class="btn-secondary" onclick="closeReceiptModal()">Close</button>
-        </div>
-    </div>
-</div>
-
-<!-- Updated Add Student Modal -->
-<div id="addStudentModal" class="modal" style="display: none;">
-    <div class="modal-content" style="max-width: 500px;">
-        <div class="modal-header">
-            <h3>Add New Student</h3>
-            <span class="close" onclick="closeAddModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <form id="addStudentForm" method="post">
-                <input type="hidden" name="addStudent" value="1">
-                <div class="form-group">
-                    <label for="name">Full Name:</label>
-                    <input type="text" name="name" id="name" required class="modal-input">
-                </div>
-                <div class="form-group">
-                    <label for="class_id">Class</label>
-                    <select name="class_id" id="class_id" class="modal-input">
-                        <option value="">Select Class</option>
-                        <?php foreach ($classes as $class): ?>
-                            <option value="<?php echo $class['id']; ?>">
-                                <?php echo htmlspecialchars($class['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="email">Email:</label>
-                    <input type="email" name="email" id="email" required class="modal-input">
-                </div>
-                <div class="form-group">
-                    <label for="phone">Phone:</label>
-                    <input type="text" name="phone" id="phone" required class="modal-input">
-                </div>
-                <div class="form-group">
-                    <label for="address">Address:</label>
-                    <textarea name="address" id="address" rows="3" required class="modal-input"></textarea>
-                </div>
-                <div class="form-actions">
-                    <button type="submit" class="btn-primary">Add Student</button>
-                    <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
-                </div>
+                <div class="form-group"><label for="payment_date">Payment Date</label><input type="date" name="payment_date" id="payment_date" class="form-control" value="<?= date('Y-m-d') ?>" required></div>
+                <div class="form-group"><label for="payment_method">Payment Method</label><select name="payment_method" id="payment_method" class="form-control" required><option>Cash</option><option>Bank Transfer</option><option>Mobile Money</option><option>Check</option></select></div>
+                <div class="form-group"><label for="memo">Memo</label><textarea name="memo" id="memo" rows="2" class="form-control"></textarea></div>
+                <h4>Unpaid Invoices</h4>
+                <table id="unpaidInvoicesTable" class="table"><thead><tr><th>#</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th>Payment</th></tr></thead><tbody></tbody><tfoot><tr><td colspan="6" style="text-align:right;"><strong>Total:</strong></td><td><strong id="totalPayment">$0.00</strong></td></tr></tfoot></table>
+                <div class="form-actions"><button type="submit" class="btn-primary">Record Payment</button></div>
             </form>
         </div>
     </div>
+    
+    <div id="statements" class="tab-content">
+        <div class="card">
+            <h3>Create Statements</h3>
+            <form id="statementForm" method="post" action="generate_statement.php" target="_blank">
+                <div class="form-row"><div class="form-group"><label for="statement_student_id">Select Student</label><select name="student_id" id="statement_student_id" class="form-control" required><option value="">-- Select a Student --</option><?php foreach ($students as $student): ?><option value="<?= $student['id'] ?>"><?= htmlspecialchars($student['name']) ?></option><?php endforeach; ?></select></div><div class="form-group"><label for="statement_date_from">Date From</label><input type="date" name="date_from" id="statement_date_from" class="form-control" required></div><div class="form-group"><label for="statement_date_to">Date To</label><input type="date" name="date_to" id="statement_date_to" class="form-control" required value="<?= date('Y-m-d') ?>"></div></div>
+                <div class="form-actions"><button type="submit" class="btn-primary">Generate Statement</button></div>
+            </form>
+        </div>
+    </div>
+
+    <div id="receipts" class="tab-content">
+        <div class="card">
+            <h3>Payment Receipts</h3>
+            <table>
+                <thead><tr><th>Receipt #</th><th>Student</th><th>Date</th><th>Amount</th><th>Method</th><th>Actions</th></tr></thead>
+                <tbody>
+                    <?php if (empty($all_receipts)): ?>
+                        <tr><td colspan="6" class="text-center">No receipts found.</td></tr>
+                    <?php else: ?>
+                        <?php foreach($all_receipts as $receipt): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($receipt['receipt_number']) ?></td>
+                            <td><?= htmlspecialchars($receipt['student_name']) ?></td>
+                            <td><?= date('M d, Y', strtotime($receipt['payment_date'])) ?></td>
+                            <td>$<?= number_format($receipt['amount'], 2) ?></td>
+                            <td><?= htmlspecialchars($receipt['payment_method']) ?></td>
+                            <td><button class="btn-icon btn-view" onclick="viewReceipt(<?= $receipt['id'] ?>)"><i class="fas fa-eye"></i></button></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
-<!-- Updated Edit Student Modal -->
-<div id="editStudentModal" class="modal" style="display: none;">
-    <div class="modal-content" style="max-width: 500px;">
-        <div class="modal-header">
-            <h3>Edit Student</h3>
-            <span class="close" onclick="closeEditModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <form id="editStudentForm" method="post">
-                <input type="hidden" name="student_id" id="edit_student_id">
-                <input type="hidden" name="editStudent" value="1">
+<div id="addStudentModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3>Add New Student</h3><span class="close" onclick="closeModal('addStudentModal')">&times;</span></div>
+        <form method="post">
+            <input type="hidden" name="addStudent" value="1">
+            <div class="modal-body">
+                <div class="form-group"><label>Full Name</label><input type="text" name="name" required class="form-control"></div>
+                <div class="form-group"><label>Email</label><input type="email" name="email" class="form-control"></div>
+                <div class="form-group"><label>Phone</label><input type="text" name="phone" class="form-control"></div>
+                <div class="form-group"><label>Address</label><textarea name="address" rows="2" class="form-control"></textarea></div>
+                <div class="form-group"><label>Student ID No.</label><input type="text" name="student_id_no" class="form-control"></div>
                 <div class="form-group">
-                    <label for="edit_name">Name:</label>
-                    <input type="text" name="name" id="edit_name" required class="modal-input">
+                    <label for="add_student_class_id">Class</label>
+                    <select name="class_id" id="add_student_class_id" class="form-control class-select">
+                        <option value="">Select Class</option>
+                        <?php foreach ($classes as $class): ?><option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option><?php endforeach; ?>
+                        <option value="create_new">-- Create New Class --</option>
+                    </select>
                 </div>
+                <div class="create-class-container" id="add_create_class_container">
+                    <input type="text" id="add_new_class_name" placeholder="New Class Name" class="form-control">
+                    <button type="button" class="btn btn-primary" onclick="saveNewClass('add')">Save</button>
+                </div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('addStudentModal')">Cancel</button><button type="submit" class="btn-primary">Add Student</button></div>
+        </form>
+    </div>
+</div>
+
+<div id="editStudentModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3>Edit Student</h3><span class="close" onclick="closeModal('editStudentModal')">&times;</span></div>
+        <form id="editStudentForm" method="post">
+            <input type="hidden" name="editStudent" value="1"><input type="hidden" name="student_id" id="edit_student_id">
+            <div class="modal-body">
+                <div class="form-group"><label>Full Name</label><input type="text" name="name" id="edit_name" required class="form-control"></div>
+                <div class="form-group"><label>Email</label><input type="email" name="email" id="edit_email" class="form-control"></div>
+                <div class="form-group"><label>Phone</label><input type="text" name="phone" id="edit_phone" class="form-control"></div>
+                <div class="form-group"><label>Address</label><textarea name="address" id="edit_address" rows="2" class="form-control"></textarea></div>
+                <div class="form-group"><label>Student ID No.</label><input type="text" name="student_id_no" id="edit_student_id_no" class="form-control"></div>
                 <div class="form-group">
                     <label for="edit_class_id">Class</label>
-                    <select name="class_id" id="edit_class_id" class="modal-input">
+                    <select name="class_id" id="edit_class_id" class="form-control class-select">
                         <option value="">Select Class</option>
-                        <?php foreach ($classes as $class): ?>
-                            <option value="<?php echo $class['id']; ?>">
-                                <?php echo htmlspecialchars($class['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
+                        <?php foreach ($classes as $class): ?><option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option><?php endforeach; ?>
+                        <option value="create_new">-- Create New Class --</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label for="edit_email">Email:</label>
-                    <input type="email" name="email" id="edit_email" required class="modal-input">
+                <div class="create-class-container" id="edit_create_class_container">
+                    <input type="text" id="edit_new_class_name" placeholder="New Class Name" class="form-control">
+                    <button type="button" class="btn btn-primary" onclick="saveNewClass('edit')">Save</button>
                 </div>
-                <div class="form-group">
-                    <label for="edit_phone">Phone:</label>
-                    <input type="text" name="phone" id="edit_phone" required class="modal-input">
-                </div>
-                <div class="form-group">
-                    <label for="edit_address">Address:</label>
-                    <textarea name="address" id="edit_address" rows="3" required class="modal-input"></textarea>
-                </div>
-                <div class="form-actions">
-                    <button type="submit" class="btn-primary">Update Student</button>
-                    <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
-                </div>
-            </form>
-        </div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editStudentModal')">Cancel</button><button type="submit" class="btn-primary">Update Student</button></div>
+        </form>
     </div>
 </div>
 
-<!-- Edit Item Modal -->
-<div id="editItemModal" class="modal" style="display: none;">
-<div class="modal-content">
-    <span class="close" onclick="closeEditModal()">&times;</span>
-    <h3>Edit Item</h3>
-    <form id="editItemForm" method="post">
-        <input type="hidden" name="item_id" id="edit_item_id">
-        <input type="hidden" name="item_type" id="edit_item_type">
-        
-        <div class="form-group">
-            <label for="edit_name">Item Name</label>
-            <input type="text" name="name" id="edit_name" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="edit_price">Price</label>
-            <input type="number" name="price" id="edit_price" step="0.01" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="edit_description">Description</label>
-            <textarea name="description" id="edit_description" rows="3"></textarea>
-        </div>
-        
-        <div class="form-group" id="edit_parent_item_group" style="display: none;">
-            <label for="edit_parent_id">Parent Item</label>
-            <select name="parent_id" id="edit_parent_id">
-                <option value="">Select Parent Item</option>
-                <?php foreach ($items as $parent): ?>
-                    <option value="<?php echo $parent['id']; ?>"><?php echo htmlspecialchars($parent['name']); ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        
-        <div class="form-actions">
-            <button type="submit" name="update_item" class="btn-primary">Update Item</button>
-            <button type="button" class="btn-secondary" onclick="closeEditModal()">Cancel</button>
-        </div>
-    </form>
+<div id="addItemModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3>Add New Item/Service</h3><span class="close" onclick="closeModal('addItemModal')">&times;</span></div>
+        <form method="post">
+            <input type="hidden" name="add_item" value="1">
+            <div class="modal-body">
+                <div class="form-group"><label>Item Name</label><input type="text" name="name" required class="form-control"></div>
+                <div class="form-group"><label>Price</label><input type="number" name="price" step="0.01" required class="form-control"></div>
+                <div class="form-group"><label>Description</label><textarea name="description" rows="2" class="form-control"></textarea></div>
+                <div class="form-group"><label>Parent Item (for sub-items)</label><select name="parent_id" class="form-control"><option value="">None (This is a main item)</option><?php foreach ($items as $parent_item): ?><option value="<?= $parent_item['id'] ?>"><?= htmlspecialchars($parent_item['name']) ?></option><?php endforeach; ?></select></div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('addItemModal')">Cancel</button><button type="submit" class="btn-primary">Save Item</button></div>
+        </form>
+    </div>
 </div>
+
+<div id="editItemModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header"><h3>Edit Item/Service</h3><span class="close" onclick="closeModal('editItemModal')">&times;</span></div>
+        <form id="editItemForm" method="post">
+            <input type="hidden" name="update_item" value="1"><input type="hidden" name="item_id" id="edit_item_id">
+            <div class="modal-body">
+                <div class="form-group"><label>Item Name</label><input type="text" name="name" id="edit_item_name" required class="form-control"></div>
+                <div class="form-group"><label>Price</label><input type="number" name="price" id="edit_item_price" step="0.01" required class="form-control"></div>
+                <div class="form-group"><label>Description</label><textarea name="description" id="edit_item_description" rows="2" class="form-control"></textarea></div>
+                <div class="form-group"><label>Parent Item</label><select name="parent_id" id="edit_parent_id" class="form-control"><option value="">None (This is a main item)</option><?php foreach ($items as $parent_item): ?><option value="<?= $parent_item['id'] ?>"><?= htmlspecialchars($parent_item['name']) ?></option><?php endforeach; ?></select></div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editItemModal')">Cancel</button><button type="submit" class="btn-primary">Update Item</button></div>
+        </form>
+    </div>
+</div>
+
+<div id="viewReceiptModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3>Receipt Details</h3>
+            <span class="close" onclick="closeModal('viewReceiptModal')">&times;</span>
+        </div>
+        <div class="modal-body" id="receipt-details-body">
+            <p>Loading...</p>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="closeModal('viewReceiptModal')">Close</button>
+            <button type="button" class="btn-primary" onclick="printReceipt()">Print Receipt</button>
+        </div>
+    </div>
 </div>
 
 <script>
-function openTab(evt, tabName) {
-var i, tabContent, tabLinks;
-tabContent = document.getElementsByClassName("tab-content");
-for (i = 0; i < tabContent.length; i++) {
-    tabContent[i].style.display = "none";
-}
-tabLinks = document.getElementsByClassName("tab-link");
-for (i = 0; i < tabLinks.length; i++) {
-    tabLinks[i].className = tabLinks[i].className.replace(" active", "");
-}
-document.getElementById(tabName).style.display = "block";
-evt.currentTarget.className += " active";
-}
+let currentStudentData = {};
+function openModal(modalId) { document.getElementById(modalId).style.display = 'block'; }
+function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
 
-function openAddModal() {
-document.getElementById('addStudentModal').style.display = 'block';
-}
+function viewStudentDetails(studentId, rowElement) {
+    document.getElementById('student-detail-placeholder').style.display = 'flex';
+    document.getElementById('student-detail-content').style.display = 'none';
+    document.querySelectorAll('#student-list-body tr').forEach(row => row.classList.remove('active'));
+    if (rowElement) rowElement.classList.add('active');
 
-function createItem() {
-    // Get form data
-    const formData = new FormData(document.getElementById('addItemForm'));
-    
-    // Send AJAX request
-    fetch('create_item.php', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => {
-        // Check if response is OK
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
-        }
-        // Try to parse as JSON but have a fallback for text
-        return response.text().then(text => {
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                // If it's not valid JSON, handle the text response
-                console.error('Invalid JSON response:', text);
-                throw new Error('Invalid server response: ' + text.substring(0, 100) + '...');
-            }
-        });
-    })
-    .then(data => {
+    fetch(`get_student_details.php?id=${studentId}`).then(response => response.json()).then(data => {
         if (data.success) {
-            showAlert('Item created successfully!');
-            closeAddItemModal();
-            // Refresh the items list
-            window.location.reload();
-        } else {
-            showAlert('Error: ' + data.message);
+            currentStudentData = data.student;
+            document.getElementById('detail-student-name').textContent = data.student.name;
+            document.getElementById('detail-student-id-no').textContent = data.student.student_id_no || 'N/A';
+            document.getElementById('detail-student-email').textContent = data.student.email;
+            document.getElementById('detail-student-phone').textContent = data.student.phone;
+            document.getElementById('detail-student-address').textContent = data.student.address;
+            document.getElementById('detail-create-invoice-btn').href = `create_invoice.php?student_id=${studentId}`;
+            document.getElementById('detail-edit-student-btn').onclick = () => editStudent(currentStudentData);
+            const balanceAmountEl = document.getElementById('detail-balance-amount');
+            balanceAmountEl.textContent = '$' + Math.abs(data.summary.balance).toFixed(2);
+            balanceAmountEl.className = 'balance-amount';
+            if (data.summary.balance > 0) balanceAmountEl.classList.add('balance-due');
+            else balanceAmountEl.classList.add('balance-zero');
+            document.getElementById('detail-total-invoiced').textContent = '$' + data.summary.totalInvoiced.toFixed(2);
+            document.getElementById('detail-total-paid').textContent = '$' + data.summary.totalPaid.toFixed(2);
+            const transactionBody = document.getElementById('detail-transaction-body');
+            transactionBody.innerHTML = '';
+            if (data.transactions.length > 0) {
+                data.transactions.forEach(trans => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${new Date(trans.date).toLocaleDateString()}</td><td>${trans.type}</td><td>${trans.description}</td><td>$${trans.amount.toFixed(2)}</td><td>...</td>`;
+                    transactionBody.appendChild(tr);
+                });
+            } else {
+                transactionBody.innerHTML = '<tr><td colspan="5" class="text-center">No transactions found.</td></tr>';
+            }
+            document.getElementById('student-detail-placeholder').style.display = 'none';
+            document.getElementById('student-detail-content').style.display = 'block';
         }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('Error creating item: ' + error.message);
     });
-    
-    return false; // Prevent form submission
-}
-
-function closeAddModal() {
-document.getElementById('addStudentModal').style.display = 'none';
-}
-
-function openEditModal(item) {
-// Fill the form with item data
-document.getElementById('edit_item_id').value = item.id;
-document.getElementById('edit_name').value = item.name;
-document.getElementById('edit_price').value = item.price;
-document.getElementById('edit_description').value = item.description || '';
-document.getElementById('edit_item_type').value = item.item_type || 'item';
-
-// Show/hide parent item selector based on item type
-if (item.parent_id || item.item_type === 'sub_item') {
-    document.getElementById('edit_parent_item_group').style.display = 'block';
-    document.getElementById('edit_parent_id').value = item.parent_id || '';
-} else {
-    document.getElementById('edit_parent_item_group').style.display = 'none';
-}
-
-document.getElementById('editItemModal').style.display = 'block';
-}
-
-function closeEditModal() {
-document.getElementById('editItemModal').style.display = 'none';
 }
 
 function editStudent(student) {
-document.getElementById('edit_student_id').value = student.id;
-document.getElementById('edit_name').value = student.name;
-document.getElementById('edit_email').value = student.email;
-document.getElementById('edit_phone').value = student.phone;
-document.getElementById('edit_address').value = student.address;
-
-document.getElementById('editStudentModal').style.display = 'block';
+    document.getElementById('edit_student_id').value = student.id;
+    document.getElementById('edit_name').value = student.name;
+    document.getElementById('edit_email').value = student.email;
+    document.getElementById('edit_phone').value = student.phone;
+    document.getElementById('edit_address').value = student.address;
+    document.getElementById('edit_student_id_no').value = student.student_id_no || '';
+    document.getElementById('edit_class_id').value = student.class_id || '';
+    openModal('editStudentModal');
 }
 
-function closeEditModal() {
-document.getElementById('editStudentModal').style.display = 'none';
+function openEditItemModal(item) {
+    document.getElementById('edit_item_id').value = item.id;
+    document.getElementById('edit_item_name').value = item.name;
+    document.getElementById('edit_item_price').value = item.price;
+    document.getElementById('edit_item_description').value = item.description || '';
+    document.getElementById('edit_parent_id').value = item.parent_id || '';
+    openModal('editItemModal');
 }
 
-function deleteStudent(studentId) {
-if (confirm('Are you sure you want to delete this student?')) {
-    window.location.href = 'customer_center.php?delete_student=' + studentId;
-}
-}
+document.querySelectorAll('.class-select').forEach(select => {
+    select.addEventListener('change', function() {
+        const modalType = this.id.startsWith('add') ? 'add' : 'edit';
+        const container = document.getElementById(`${modalType}_create_class_container`);
+        container.style.display = this.value === 'create_new' ? 'flex' : 'none';
+    });
+});
 
-function showAlert(message) {
-alert(message);
+function saveNewClass(modalType) {
+    const inputId = `${modalType}_new_class_name`;
+    const newClassName = document.getElementById(inputId).value.trim();
+    if (newClassName === '') { alert('Please enter a class name.'); return; }
+    const formData = new FormData();
+    formData.append('class_name', newClassName);
+    fetch('ajax_create_class.php', { method: 'POST', body: formData }).then(response => response.json()).then(data => {
+        if (data.success) {
+            const newOption = new Option(data.name, data.id, true, true);
+            document.querySelectorAll('.class-select').forEach(select => {
+                select.insertBefore(newOption.cloneNode(true), select.querySelector('option[value="create_new"]'));
+            });
+            document.getElementById(`${modalType}_student_class_id`).value = data.id;
+            document.getElementById(`${modalType}_create_class_container`).style.display = 'none';
+            document.getElementById(inputId).value = '';
+        } else { alert('Error: ' + data.message); }
+    }).catch(error => console.error('Error:', error));
 }
 
 function loadUnpaidInvoices() {
-    const studentId = document.getElementById('student_id').value;
-    if (!studentId) {
-        document.getElementById('unpaidInvoicesTable').querySelector('tbody').innerHTML = '';
-        document.getElementById('totalPayment').textContent = '$0.00';
-        return;
-    }
-
-    fetch(`get_unpaid_invoices.php?student_id=${studentId}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const invoices = data.data;
-                let html = '';
-                invoices.forEach(invoice => {
-                    html += `
-                        <tr>
-                            <td>${invoice.id}</td>
-                            <td>${new Date(invoice.invoice_date).toLocaleDateString()}</td>
-                            <td>${new Date(invoice.due_date).toLocaleDateString()}</td>
-                            <td>$${invoice.total_amount.toFixed(2)}</td>
-                            <td>$${invoice.paid_amount.toFixed(2)}</td>
-                            <td>$${(invoice.total_amount - invoice.paid_amount).toFixed(2)}</td>
-                            <td>
-                                <input type="hidden" name="invoice_ids[]" value="${invoice.id}">
-                                <input type="number" name="payment_amounts[]" class="payment-amount" 
-                                       min="0" max="${(invoice.total_amount - invoice.paid_amount).toFixed(2)}" 
-                                       step="0.01" value="0" oninput="calculateTotal()">
-                            </td>
-                        </tr>
-                    `;
-                });
-                document.querySelector('#unpaidInvoicesTable tbody').innerHTML = html;
-                calculateTotal();
-            } else {
-                alert('Error loading invoices: ' + data.error);
-            }
-        })
-        .catch(error => console.error('Error:', error));
+    const studentId = document.getElementById('student_id_payment').value;
+    const tbody = document.querySelector('#unpaidInvoicesTable tbody');
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center">Loading...</td></tr>';
+    if (!studentId) { tbody.innerHTML = '<tr><td colspan="7" class="text-center">Please select a student.</td></tr>'; return; }
+    fetch(`get_unpaid_invoices.php?student_id=${studentId}`).then(response => response.json()).then(data => {
+        tbody.innerHTML = '';
+        if (data.success && data.data.length > 0) {
+            data.data.forEach(invoice => {
+                tbody.innerHTML += `<tr><td>${invoice.id}</td><td>${new Date(invoice.invoice_date).toLocaleDateString()}</td><td>${new Date(invoice.due_date).toLocaleDateString()}</td><td>$${parseFloat(invoice.total_amount).toFixed(2)}</td><td>$${parseFloat(invoice.paid_amount).toFixed(2)}</td><td>$${invoice.balance.toFixed(2)}</td><td><input type="hidden" name="invoice_ids[]" value="${invoice.id}"><input type="number" name="payment_amounts[]" class="form-control payment-amount" min="0" max="${invoice.balance.toFixed(2)}" step="0.01" value="0" oninput="calculateTotal()"></td></tr>`;
+            });
+        } else { tbody.innerHTML = '<tr><td colspan="7" class="text-center">No unpaid invoices for this student.</td></tr>'; }
+        calculateTotal();
+    });
 }
 
 function calculateTotal() {
-const paymentInputs = document.querySelectorAll('.payment-amount');
-let total = 0;
-
-paymentInputs.forEach(function(input) {
-    total += parseFloat(input.value) || 0;
-});
-
-document.getElementById('totalPayment').textContent = '$' + total.toFixed(2);
-}
-
-function formatDate(dateString) {
-const date = new Date(dateString);
-return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-// FIXED PAYMENT HANDLER
-function handlePaymentSubmit(event) {
-  event.preventDefault();
-  
-  // Fixed: Get the form and the submit button using form ID
-  const form = document.getElementById('paymentForm');
-  const submitBtn = form.querySelector('button[type="submit"]');
-  
-  const formData = new FormData(form);
-  const total = parseFloat(document.getElementById('totalPayment').textContent.replace('$', ''));
-  
-  if (total <= 0) {
-    alert('Please enter at least one payment amount.');
-    return false;
-  }
-
-  // Show loading indicator
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Processing...';
-
-  fetch('record_payment.php', {
-    method: 'POST',
-    body: formData
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      // Show receipt modal
-      showReceipt({
-        receipt_number: data.receipt_number,
-        student_name: document.querySelector('#student_id option:checked').textContent,
-        payment_date: document.getElementById('payment_date').value,
-        amount: total,
-        payment_method: document.getElementById('payment_method').value,
-        memo: document.getElementById('memo').value
-      });
-      
-      // Reset form and reload data
-      form.reset();
-      loadUnpaidInvoices();
-    } else {
-      showAlert('Error: ' + (data.error || 'Payment failed'));
-    }
-    // Re-enable button regardless of success
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Record Payment';
-  })
-  .catch(error => {
-    showAlert('Network error: ' + error.message);
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Record Payment';
-  });
-  
-  return false;
-}
-
-function showReceipt(receipt) {
-  const content = `
-    <div class="receipt-header">
-      <h2>Bloomfield School</h2>
-      <p>123 School Street, Nairobi, Kenya</p>
-      <p>Phone: +254 712 345 678</p>
-    </div>
-    
-    <div class="receipt-details">
-      <p><strong>Receipt No:</strong> ${receipt.receipt_number}</p>
-      <p><strong>Date:</strong> ${new Date(receipt.payment_date).toLocaleDateString()}</p>
-    </div>
-    
-    <div class="student-info">
-      <p><strong>Student:</strong> ${receipt.student_name}</p>
-      <p><strong>Receipt For:</strong> Payment Received</p>
-    </div>
-    
-    <table class="receipt-items">
-      <thead>
-        <tr>
-          <th>Description</th>
-          <th>Amount</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>School Fees Payment</td>
-          <td>Ksh ${parseFloat(receipt.amount).toFixed(2)}</td>
-        </tr>
-      </tbody>
-      <tfoot>
-        <tr>
-          <th>Total Paid</th>
-          <th>Ksh ${parseFloat(receipt.amount).toFixed(2)}</th>
-        </tr>
-      </tfoot>
-    </table>
-    
-    <div class="payment-method">
-      <p><strong>Payment Method:</strong> ${receipt.payment_method}</p>
-      <p><strong>Memo:</strong> ${receipt.memo || 'N/A'}</p>
-    </div>
-    
-    <div class="receipt-footer">
-      <p>Thank you for your payment!</p>
-    </div>
-  `;
-  
-  document.getElementById('receiptContent').innerHTML = content;
-  document.getElementById('receiptModal').style.display = 'block';
-}
-
-function openReceiptsTab() {
-    
-    // Switch to receipts tab
-    const tabs = document.querySelectorAll('.tab-link');
-    const contents = document.querySelectorAll('.tab-content');
-    
-    // Remove active class from all tabs
-    tabs.forEach(tab => tab.classList.remove('active'));
-    contents.forEach(content => content.style.display = 'none');
-    
-    // Activate receipts tab
-    document.querySelector('[onclick="openTab(event, \'receipts\')"]').classList.add('active');
-    document.getElementById('receipts').style.display = 'block';
-    
-    // Highlight the receipt in the table
-    highlightReceipt(receipt.id);
-}
-
-function closeReceiptModal() {
-    document.getElementById('receiptModal').style.display = 'none';
-}
-
-
-function highlightReceipt(receiptId) {
-    const rows = document.querySelectorAll('#receiptsTable tbody tr');
-    rows.forEach(row => {
-        if (row.dataset.receiptId == receiptId) {
-            row.style.backgroundColor = '#e3f2fd';
-            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else {
-            row.style.backgroundColor = '';
-        }
-    });
-}
-
-function searchReceipts() {
-    const searchTerm = document.getElementById('receiptSearch').value.toLowerCase();
-    const rows = document.querySelectorAll('#receiptsTable tbody tr');
-    
-    rows.forEach(row => {
-        const cells = row.querySelectorAll('td');
-        const receiptNum = cells[0].textContent.toLowerCase();
-        const studentName = cells[1].textContent.toLowerCase();
-        const date = cells[2].textContent.toLowerCase();
-        const amount = cells[3].textContent.toLowerCase();
-        const method = cells[4].textContent.toLowerCase();
-        
-        if (receiptNum.includes(searchTerm) || 
-            studentName.includes(searchTerm) || 
-            date.includes(searchTerm) || 
-            amount.includes(searchTerm) || 
-            method.includes(searchTerm)) {
-            row.style.display = '';
-        } else {
-            row.style.display = 'none';
-        }
-    });
-}
-
-function filterReceipts() {
-    const startDate = new Date(document.getElementById('startDate').value);
-    const endDate = new Date(document.getElementById('endDate').value);
-    const rows = document.querySelectorAll('#receiptsTable tbody tr');
-    
-    rows.forEach(row => {
-        const dateCell = row.querySelector('td:nth-child(3)');
-        if (!dateCell) return;
-        
-        const receiptDate = new Date(dateCell.textContent);
-        
-        if ((!startDate || receiptDate >= startDate) && 
-            (!endDate || receiptDate <= endDate)) {
-            row.style.display = '';
-        } else {
-            row.style.display = 'none';
-        }
-    });
-}
-
-function sortReceipts(column) {
-    const table = document.getElementById('receiptsTable');
-    const tbody = table.querySelector('tbody');
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    
-    rows.sort((a, b) => {
-        const aValue = a.querySelector(`td:nth-child(${getColumnIndex(column)})`).textContent;
-        const bValue = b.querySelector(`td:nth-child(${getColumnIndex(column)})`).textContent;
-        
-        // Handle numeric values
-        if (column === 'amount') {
-            return parseFloat(aValue.replace('Ksh ', '')) - parseFloat(bValue.replace('Ksh ', ''));
-        }
-        
-        // Handle dates
-        if (column === 'payment_date') {
-            return new Date(aValue) - new Date(bValue);
-        }
-        
-        // Default to string comparison
-        return aValue.localeCompare(bValue);
-    });
-    
-    // Clear and re-add sorted rows
-    tbody.innerHTML = '';
-    rows.forEach(row => tbody.appendChild(row));
-}
-
-function getColumnIndex(column) {
-    const columns = {
-        'receipt_number': 1,
-        'student_name': 2,
-        'payment_date': 3,
-        'amount': 4,
-        'payment_method': 5
-    };
-    return columns[column] || 1;
+    const total = Array.from(document.querySelectorAll('#paymentForm .payment-amount')).reduce((sum, input) => sum + (parseFloat(input.value) || 0), 0);
+    document.getElementById('totalPayment').textContent = '$' + total.toFixed(2);
 }
 
 function viewReceipt(receiptId) {
+    const modalBody = document.getElementById('receipt-details-body');
+    modalBody.innerHTML = '<p style="text-align:center;">Loading receipt...</p>';
+    openModal('viewReceiptModal');
+    
     fetch(`get_receipt.php?id=${receiptId}`)
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                showReceipt(data.receipt);
+                const r = data.receipt;
+                modalBody.innerHTML = `
+                    <div id="receipt-printable-area">
+                        <div style="text-align: center; margin-bottom: 20px;">
+                            ${r.school_logo_url ? `<img src="${r.school_logo_url}" alt="Logo" style="max-width: 120px; max-height: 60px;"><br>` : ''}
+                            <h3 style="margin: 10px 0 0 0;">${r.school_name}</h3>
+                            <p style="margin: 5px 0; font-size: 0.9em; color: #555;">${r.school_address || ''}</p>
+                            <p style="margin: 5px 0; font-size: 0.9em; color: #555;">${r.school_phone || ''} | ${r.school_email || ''}</p>
+                        </div>
+                        <hr>
+                        <h4 style="text-align: center; margin-top: 20px; text-transform: uppercase; letter-spacing: 1px;">Payment Receipt</h4>
+                        <p><strong>Receipt #:</strong> ${r.receipt_number}</p>
+                        <p><strong>Student:</strong> ${r.student_name}</p>
+                        <p><strong>Date:</strong> ${new Date(r.payment_date).toLocaleDateString()}</p>
+                        <h3 style="margin-top: 20px; color: var(--success);">Amount Paid: $${parseFloat(r.amount).toFixed(2)}</h3>
+                        <p><strong>Method:</strong> ${r.payment_method}</p>
+                        <p><strong>Memo:</strong> ${r.memo || 'N/A'}</p>
+                    </div>
+                `;
             } else {
-                showAlert('Receipt not found');
+                modalBody.innerHTML = `<p class="alert alert-danger">Could not load receipt details. ${data.error || ''}</p>`;
             }
+        })
+        .catch(err => {
+            modalBody.innerHTML = '<p class="alert alert-danger">An error occurred while fetching the receipt.</p>';
+            console.error('Fetch Error:', err);
         });
 }
 
 function printReceipt() {
-  const printContent = document.getElementById('receiptContent').innerHTML;
-  const originalContent = document.body.innerHTML;
-  
-  document.body.innerHTML = printContent;
-  window.print();
-  document.body.innerHTML = originalContent;
+    document.body.classList.add('receipt-modal-active');
+    window.print();
+    document.body.classList.remove('receipt-modal-active');
 }
 
-function toggleStudentSelection() {
-const selection = document.getElementById('student_selection').value;
-document.getElementById('class_selection').style.display = selection === 'class' ? 'block' : 'none';
-document.getElementById('student_multi_selection').style.display = selection === 'selected' ? 'block' : 'none';
-}
-
-function selectTemplate(template) {
-document.getElementById('template_' + template).checked = true;
-}
-
-function resetForm() {
-document.getElementById('statementForm').reset();
-document.getElementById('statement_preview').innerHTML = '<h3 style="text-align: center;">Statement Preview</h3><p style="text-align: center; color: #666;">(Select students and generate statements to see preview)</p>';
-}
-
-function previewStatement() {
-    const formData = new FormData(document.getElementById('statementForm'));
-    formData.append('action', 'preview');
-
-    fetch('customer_center.php', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.text())
-    .then(html => {
-        document.getElementById('statement_preview').innerHTML = html;
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('Error generating preview');
-    });
-}
-
-// Update form submission handler
-document.getElementById('statementForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    const formData = new FormData(this);
-    formData.append('action', 'download');
-    
-    // Submit the form normally for PDF download
-    const newForm = document.createElement('form');
-    newForm.method = 'POST';
-    newForm.action = 'customer_center.php';
-    newForm.style.display = 'none';
-    
-    for (const [key, value] of formData) {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = key;
-        input.value = value;
-        newForm.appendChild(input);
-    }
-    
-    document.body.appendChild(newForm);
-    newForm.submit();
-});
-
-// Initialize the page
 document.addEventListener('DOMContentLoaded', function() {
-// Any initialization code here
-     // Add new event listeners
-    document.getElementById('downloadSelected').addEventListener('click', downloadSelectedInvoices);
-    document.getElementById('sendWhatsApp').addEventListener('click', sendViaWhatsApp);
-    
-    // Add "Select All" functionality
-    const selectAll = document.createElement('input');
-    selectAll.type = 'checkbox';
-    selectAll.id = 'selectAllInvoices';
-    selectAll.style.marginRight = '5px';
-    
-    const firstHeader = document.querySelector('#invoices th:first-child');
-    if (firstHeader) {
-        firstHeader.appendChild(selectAll);
-    }
-    
-    selectAll.addEventListener('change', function() {
-        document.querySelectorAll('.invoice-checkbox').forEach(checkbox => {
-            checkbox.checked = this.checked;
-        });
-    });
-});
-    // Add visual feedback when clicking on student names
-    const studentLinks = document.querySelectorAll('.student-name-link');
-    studentLinks.forEach(link => {
-        link.addEventListener('click', function(e) {
-            // Add a subtle ripple effect when clicking
-            const ripple = document.createElement('span');
-            ripple.classList.add('student-link-ripple');
-            ripple.style.position = 'absolute';
-            ripple.style.borderRadius = '50%';
-            ripple.style.backgroundColor = 'rgba(33, 150, 243, 0.3)';
-            ripple.style.width = '100px';
-            ripple.style.height = '100px';
-            ripple.style.transform = 'translate(-50%, -50%)';
-            ripple.style.pointerEvents = 'none';
-            
-            // Get position relative to the link
-            const rect = this.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            ripple.style.left = x + 'px';
-            ripple.style.top = y + 'px';
-            
-            this.appendChild(ripple);
-            
-            // Remove ripple after animation
-            setTimeout(() => {
-                ripple.remove();
-            }, 600);
-        });
-    });
-    
-    // Add random subtle background colors to student avatars for visual interest
-    const avatars = document.querySelectorAll('.student-avatar');
-    const colors = [
-        { bg: '#e3f2fd', text: '#0d47a1' }, // Blue
-        { bg: '#e8f5e9', text: '#2e7d32' }, // Green
-        { bg: '#fff3e0', text: '#e65100' }, // Orange
-        { bg: '#f3e5f5', text: '#7b1fa2' }, // Purple
-        { bg: '#e0f7fa', text: '#006064' }  // Teal
-    ];
-    
-    avatars.forEach(avatar => {
-        const randomColor = colors[Math.floor(Math.random() * colors.length)];
-        avatar.style.backgroundColor = randomColor.bg;
-        avatar.style.color = randomColor.text;
-    });
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab') || 'students';
+    const studentIdForPayment = params.get('student_id');
 
-// Add this after your other JavaScript functions
-let currentPage = 1;
-const rowsPerPage = 10;
-
-function setupPagination() {
-    const rows = document.querySelectorAll('#receiptsTable tbody tr');
-    const pageCount = Math.ceil(rows.length / rowsPerPage);
-    
-    // Update pagination controls
-    document.getElementById('prevPage').addEventListener('click', () => {
-        if (currentPage > 1) showPage(--currentPage);
-    });
-    
-    document.getElementById('nextPage').addEventListener('click', () => {
-        if (currentPage < pageCount) showPage(++currentPage);
-    });
-    
-    // Initial page display
-    showPage(currentPage);
-}
-
-function showPage(page) {
-    const rows = document.querySelectorAll('#receiptsTable tbody tr');
-    const startIndex = (page - 1) * rowsPerPage;
-    const endIndex = startIndex + rowsPerPage;
-    
-    rows.forEach((row, index) => {
-        row.style.display = (index >= startIndex && index < endIndex) ? '' : 'none';
-    });
-    
-    document.getElementById('currentPage').textContent = page;
-}
-
-// Initialize pagination when page loads
-document.addEventListener('DOMContentLoaded', setupPagination);
-
-function downloadSelectedInvoices() {
-    const selected = [];
-    document.querySelectorAll('.invoice-checkbox:checked').forEach(checkbox => {
-        selected.push(checkbox.value);
-    });
-
-    if (selected.length === 0) {
-        showAlert('Please select at least one invoice');
-        return;
-    }
-
-    // Create a temporary form to submit
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = 'download_invoices.php';
-    
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'invoice_ids';
-    input.value = JSON.stringify(selected);
-    
-    form.appendChild(input);
-    document.body.appendChild(form);
-    form.submit();
-}
-
-function sendViaWhatsApp() {
-    const selected = [];
-    document.querySelectorAll('.invoice-checkbox:checked').forEach(checkbox => {
-        selected.push(checkbox.value);
-    });
-
-    if (selected.length === 0) {
-        showAlert('Please select at least one invoice');
-        return;
-    }
-
-    // In a real implementation, this would send to your backend
-    // For now, we'll simulate the behavior
-    if (selected.length === 1) {
-        // For single invoice, open WhatsApp directly
-        const invoiceId = selected[0];
-        const message = encodeURIComponent(`Please find your invoice attached: ${window.location.origin}/download_invoice.php?id=${invoiceId}`);
-        window.open(`https://api.whatsapp.com/send?text=${message}`, '_blank');
+    const tabButton = document.querySelector(`.tab-link[onclick*="'${tab}'"]`);
+    if (tabButton) {
+        tabButton.click();
     } else {
-        showAlert('Preparing to send multiple invoices via WhatsApp...');
-        // In real implementation, this would create a ZIP file and send
+        const firstTab = document.querySelector('.tab-link');
+        if(firstTab) firstTab.click();
     }
-}
 
+    if (tab === 'receive_payment' && studentIdForPayment) {
+        const studentSelect = document.getElementById('student_id_payment');
+        if (studentSelect) {
+            studentSelect.value = studentIdForPayment;
+            studentSelect.dispatchEvent(new Event('change'));
+        }
+    }
+
+    const resizer = document.getElementById('drag-handle');
+    const leftPanel = document.querySelector('.student-list-panel');
+    let isResizing = false;
+    resizer.addEventListener('mousedown', (e) => { 
+        isResizing = true; 
+        document.addEventListener('mousemove', handleMouseMove); 
+        document.addEventListener('mouseup', () => { 
+            isResizing = false; 
+            document.removeEventListener('mousemove', handleMouseMove); 
+        }, { once: true }); 
+    });
+    function handleMouseMove(e) { 
+        if (!isResizing) return; 
+        const containerRect = leftPanel.parentElement.getBoundingClientRect(); 
+        const newLeftWidth = e.clientX - containerRect.left; 
+        if (newLeftWidth > 250 && newLeftWidth < (containerRect.width - 300)) { 
+            leftPanel.style.width = newLeftWidth + 'px'; 
+        } 
+    }
+});
 </script>

@@ -1,111 +1,87 @@
 <?php
-// Start session and include necessary files
+// service_payment.php - Corrected Version
 session_start();
 require 'config.php';
 require 'functions.php';
+require 'header.php'; // Ensures $school_id is available
 
-// Make sure this is a POST request
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    // Return JSON error response
-    header('Content-Type: application/json');
-    echo json_encode(['success' => false, 'error' => 'Invalid request method']);
-    exit;
-}
-
-// Set the content type header to application/json
 header('Content-Type: application/json');
+$response = ['success' => false, 'error' => ''];
 
-try {
-    // Get form data
-    $payment_date = $_POST['payment_date'] ?? '';
-    $provider_name = $_POST['provider_name'] ?? '';
-    $account_id = $_POST['account_id'] ?? '';
-    $amount = $_POST['amount'] ?? 0;
-    $description = $_POST['description'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        // Validate and sanitize inputs
+        $payment_date = $_POST['payment_date'] ?? '';
+        $provider_name = $_POST['provider_name'] ?? '';
+        $account_id = (int)($_POST['account_id'] ?? 0);
+        $amount = (float)($_POST['amount'] ?? 0);
+        $description = $_POST['description'] ?? '';
+        $receipt_image_path = null;
 
-    // Validate required fields
-    if (empty($payment_date) || empty($provider_name) || empty($account_id) || empty($amount)) {
-        echo json_encode(['success' => false, 'error' => 'All required fields must be filled']);
-        exit;
-    }
+        if (empty($payment_date) || empty($provider_name) || empty($account_id) || $amount <= 0) {
+            throw new Exception('All required fields must be filled with valid data.');
+        }
 
-    // Modify the description to include provider name
-    $full_description = "Payment to " . $provider_name . ": " . $description;
-    
-    // Insert the service payment into the expense_transactions table
-    $stmt = $pdo->prepare("
-        INSERT INTO expenses (
-            transaction_date, 
-            description, 
-            amount, 
-            account_id, 
-            type, 
-            transaction_type
-        ) VALUES (
-            :payment_date, 
-            :description, 
-            :amount, 
-            :account_id, 
-            'service_payment', 
-            'debit'
-        )
-    ");
+        // Handle file upload
+        if (isset($_FILES['receipt_image']) && $_FILES['receipt_image']['error'] == UPLOAD_ERR_OK) {
+            $upload_dir = 'uploads/receipts/';
+            if (!is_dir($upload_dir)) mkdir($upload_dir, 0775, true);
+            
+            $file_ext = pathinfo($_FILES['receipt_image']['name'], PATHINFO_EXTENSION);
+            $file_name = uniqid('receipt_', true) . '.' . $file_ext;
+            $target_file = $upload_dir . $file_name;
 
-    $stmt->bindParam(':payment_date', $payment_date);
-    $stmt->bindParam(':description', $full_description);
-    $stmt->bindParam(':amount', $amount, PDO::PARAM_STR);
-    $stmt->bindParam(':account_id', $account_id, PDO::PARAM_INT);
-    $stmt->execute();
+            if (move_uploaded_file($_FILES['receipt_image']['tmp_name'], $target_file)) {
+                $receipt_image_path = $target_file;
+            }
+        }
 
-    // Also create a corresponding credit entry for the cash/bank account
-    // (You may want to have this configurable to select which account to credit)
-    
-    // Get the cash/bank account (this is just an example - you might want to make this configurable)
-    $cash_account_stmt = $pdo->prepare("SELECT id FROM accounts WHERE account_type = 'Assets' AND account_name LIKE '%Cash%' OR account_name LIKE '%Bank%' LIMIT 1");
-    $cash_account_stmt->execute();
-    $cash_account = $cash_account_stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($cash_account) {
-        $cash_account_id = $cash_account['id'];
-        
-        $credit_stmt = $pdo->prepare("
-            INSERT INTO expenses (
-                transaction_date, 
-                description, 
-                amount, 
-                account_id, 
-                type, 
-                transaction_type
-            ) VALUES (
-                :payment_date, 
-                :description, 
-                :amount, 
-                :account_id, 
-                'service_payment', 
-                'credit'
-            )
+        $full_description = "Payment to " . $provider_name . ": " . $description;
+
+        // Start transaction
+        $pdo->beginTransaction();
+
+        // 1. Debit the expense account
+        $stmt = $pdo->prepare("
+            INSERT INTO expenses (school_id, transaction_date, description, amount, account_id, type, transaction_type, receipt_image_url) 
+            VALUES (?, ?, ?, ?, ?, 'service_payment', 'debit', ?)
         ");
-        
-        $credit_stmt->bindParam(':payment_date', $payment_date);
-        $credit_stmt->bindParam(':description', $full_description);
-        $credit_stmt->bindParam(':amount', $amount, PDO::PARAM_STR);
-        $credit_stmt->bindParam(':account_id', $cash_account_id, PDO::PARAM_INT);
-        $credit_stmt->execute();
+        $stmt->execute([$school_id, $payment_date, $full_description, $amount, $account_id, $receipt_image_path]);
+
+        // Use the new function to update the expense account balance
+        updateAccountBalance($pdo, $account_id, $amount, 'debit', $school_id);
+
+        // 2. Credit the cash/bank account
+        $stmt = $pdo->prepare("SELECT id FROM accounts WHERE school_id = ? AND account_type = 'asset' ORDER BY id LIMIT 1");
+        $stmt->execute([$school_id]);
+        $cashAccount = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($cashAccount) {
+            $cash_account_id = $cashAccount['id'];
+            $stmt = $pdo->prepare("
+                INSERT INTO expenses (school_id, transaction_date, description, amount, account_id, type, transaction_type, receipt_image_url) 
+                VALUES (?, ?, ?, ?, ?, 'service_payment', 'credit', ?)
+            ");
+            $stmt->execute([$school_id, $payment_date, $full_description, $amount, $cash_account_id, $receipt_image_path]);
+
+            // Use the new function to update the cash account balance
+            updateAccountBalance($pdo, $cash_account_id, $amount, 'credit', $school_id);
+        }
+
+        // Commit transaction
+        $pdo->commit();
+        $response['success'] = true;
+
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        $response['error'] = 'Error: ' . $e->getMessage();
     }
-
-    // Update account balances
-    updateAccountBalance($pdo, $account_id);
-    if (isset($cash_account_id)) {
-        updateAccountBalance($pdo, $cash_account_id);
-    }
-
-    // Return success response
-    echo json_encode(['success' => true]);
-
-} catch (PDOException $e) {
-    // Return error response
-    echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);
-} catch (Exception $e) {
-    // Return error response for any other exceptions
-    echo json_encode(['success' => false, 'error' => 'Error: ' . $e->getMessage()]);
+} else {
+    $response['error'] = 'Invalid request method';
 }
+
+echo json_encode($response);
+exit;
+?>

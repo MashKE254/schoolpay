@@ -1,0 +1,45 @@
+{
+    "TransactionType": "Pay Bill",
+    "TransID": "QG912ABCDE",
+    "TransTime": "20250709112000",
+    "TransAmount": "500.00",
+    "BusinessShortCode": "600984",
+    "BillRefNumber": "1234",
+    "InvoiceNumber": "",
+    "OrgAccountBalance": "",
+    "ThirdPartyTransID": "",
+    "MSISDN": "254700123456",
+    "FirstName": "John",
+    "MiddleName": "",
+    "LastName": "Doe"
+  }
+{
+    "TransactionType": "Pay Bill",
+    "TransID": "BH13FTUO0H",
+    "TransTime": "20250709112000",
+    "TransAmount": "10000"
+    "BusinessShortCode": "600984",
+    "BillRefNumber": "1234",
+    "InvoiceNumber": "",
+    "OrgAccountBalance": "",
+    "ThirdPartyTransID": "",
+    "MSISDN": "254700123456",
+    "FirstName": "william",
+    "MiddleName": "",
+    "LastName": "Doe"
+  }
+{
+    "TransactionType": "Pay Bill",
+    "TransID": "QG912ABCDF",
+    "TransTime": "20250709112000",
+    "TransAmount": "50000.00",
+    "BusinessShortCode": "600984",
+    "BillRefNumber": "1234",
+    "InvoiceNumber": "",
+    "OrgAccountBalance": "",
+    "ThirdPartyTransID": "",
+    "MSISDN": "254700123456",
+    "FirstName": "William",
+    "MiddleName": "",
+    "LastName": "Macharia"
+  }

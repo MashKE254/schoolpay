@@ -1,19 +1,24 @@
 <?php
-require 'config.php';
+require_once 'config.php';
+require_once 'functions.php';
+session_start();
 
-$receipt_id = intval($_GET['id'] ?? 0);
+header('Content-Type: application/json');
+
+// Security check: Ensure user is logged in and it's a valid request
+if ($_SERVER['REQUEST_METHOD'] !== 'GET' || !isset($_SESSION['school_id'])) {
+    echo json_encode(['success' => false, 'message' => 'Unauthorized access.']);
+    exit();
+}
+
+$school_id = $_SESSION['school_id'];
+$receipt_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 $response = ['success' => false];
 
 if ($receipt_id) {
     try {
-        $stmt = $pdo->prepare("
-            SELECT r.*, s.name AS student_name 
-            FROM payment_receipts r
-            JOIN students s ON s.id = r.student_id
-            WHERE r.id = ?
-        ");
-        $stmt->execute([$receipt_id]);
-        $receipt = $stmt->fetch(PDO::FETCH_ASSOC);
+        // --- FIX: Use the updated function that joins school details ---
+        $receipt = getReceiptDetails($pdo, $receipt_id, $school_id);
         
         if ($receipt) {
             $response = [
@@ -21,14 +26,15 @@ if ($receipt_id) {
                 'receipt' => $receipt
             ];
         } else {
-            $response['error'] = 'Receipt not found';
+            $response['error'] = 'Receipt not found or you do not have permission to view it.';
         }
     } catch (PDOException $e) {
-        $response['error'] = 'Database error: ' . $e->getMessage();
+        error_log("Get Receipt Error: " . $e->getMessage());
+        $response['error'] = 'Database error.';
     }
 } else {
     $response['error'] = 'Invalid receipt ID';
 }
 
-header('Content-Type: application/json');
 echo json_encode($response);
+?>

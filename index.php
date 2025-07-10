@@ -1,202 +1,49 @@
 <?php
-// dashboard.php - Main Dashboard for School Finance Management System
+// index.php - Main Dashboard for School Finance Management System
 require 'config.php';
 require 'functions.php';
-include 'header.php';
+include 'header.php'; // This now handles session and sets $school_id
 
-// Calculate total students - FIXED WITH ERROR HANDLING
-$totalStudents = 0;
-try {
-    $stmt = $pdo->query("SELECT COUNT(*) as total_students FROM students");
-    if ($stmt) {
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        $totalStudents = $result['total_students'] ?? 0;
-    }
-} catch (PDOException $e) {
-    error_log("Student count error: " . $e->getMessage());
-    $totalStudents = 0;
-}
-
-// Calculate total income (sum of all payments)
-$totalIncome = 0;
-try {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as total_income 
-                          FROM payments 
-                          WHERE payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)");
-    $stmt->execute();
-    $totalIncome = $stmt->fetchColumn();
-} catch (PDOException $e) {
-    error_log("Income calculation error: " . $e->getMessage());
-    $totalIncome = 0;
-}
-
-// Calculate total expenses
-$totalExpenses = 0;
-try {
-    $stmt = $pdo->query("SELECT SUM(amount) as total_expenses FROM expenses");
-    if ($stmt) {
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        $totalExpenses = $result['total_expenses'] ?? 0;
-    }
-} catch (PDOException $e) {
-    error_log("Expense calculation error: " . $e->getMessage());
-    $totalExpenses = 0;
-}
-
-// Calculate current balance (income - expenses)
-$currentBalance = $totalIncome - $totalExpenses;
+// --- Data Fetching ---
+$summary = getDashboardSummary($pdo, $school_id);
+$totalStudents = $summary['total_students'];
+$totalIncome = $summary['total_income'];
+$totalExpenses = $summary['total_expenses'];
+$currentBalance = $summary['current_balance'];
 
 // Get recent transactions (combining recent payments and expenses)
 $recentTransactions = [];
+$stmt = $pdo->prepare("
+    SELECT p.id, p.payment_date as date, p.amount, 'Payment' as type, s.name as related_name, i.id as reference_number
+    FROM payments p
+    JOIN invoices i ON p.invoice_id = i.id
+    JOIN students s ON i.student_id = s.id
+    WHERE p.school_id = ? ORDER BY p.payment_date DESC LIMIT 5
+");
+$stmt->execute([$school_id]);
+$recentTransactions = array_merge($recentTransactions, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
-// Get recent payments
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            p.id,
-            p.payment_date as date,
-            p.amount,
-            'Payment' as type,
-            s.name as related_name,
-            i.id as reference_number
-        FROM 
-            payments p
-        JOIN 
-            invoices i ON p.invoice_id = i.id
-        JOIN 
-            students s ON i.student_id = s.id
-        ORDER BY 
-            p.payment_date DESC
-        LIMIT 5
-    ");
-    if ($stmt) {
-        $recentPayments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $recentTransactions = array_merge($recentTransactions, $recentPayments);
-    }
-} catch (PDOException $e) {
-    error_log("Recent payments error: " . $e->getMessage());
-}
+$stmt = $pdo->prepare("
+    SELECT e.id, e.transaction_date as date, e.amount, 'Expense' as type, e.type as related_name, e.reference_number
+    FROM expenses e
+    WHERE e.school_id = ? ORDER BY e.transaction_date DESC LIMIT 5
+");
+$stmt->execute([$school_id]);
+$recentTransactions = array_merge($recentTransactions, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
-// Get recent expenses
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            e.id,
-            e.transaction_date as date,
-            e.amount,
-            'Expense' as type,
-            e.type as related_name,
-            e.reference_number
-        FROM 
-            expenses e
-        ORDER BY 
-            e.transaction_date DESC
-        LIMIT 5
-    ");
-    if ($stmt) {
-        $recentExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $recentTransactions = array_merge($recentTransactions, $recentExpenses);
-    }
-} catch (PDOException $e) {
-    error_log("Recent expenses error: " . $e->getMessage());
-}
-
-// Sort transactions by date (newest first)
-usort($recentTransactions, function($a, $b) {
-    return strtotime($b['date']) - strtotime($a['date']);
-});
+usort($recentTransactions, fn($a, $b) => strtotime($b['date']) - strtotime($a['date']));
 $recentTransactions = array_slice($recentTransactions, 0, 5);
 
+
 // Get overdue invoices
-$overdueInvoices = [];
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            i.id,
-            i.id as invoice_number,
-            i.invoice_date,
-            i.due_date,
-            i.total_amount,
-            COALESCE(SUM(p.amount), 0) as paid_amount,
-            i.total_amount - COALESCE(SUM(p.amount), 0) as balance,
-            s.name as student_name,
-            DATEDIFF(CURRENT_DATE, i.due_date) as days_overdue
-        FROM 
-            invoices i
-        JOIN 
-            students s ON i.student_id = s.id
-        LEFT JOIN 
-            payments p ON i.id = p.invoice_id
-        WHERE 
-            i.due_date < CURRENT_DATE
-        GROUP BY 
-            i.id
-        HAVING 
-            balance > 0
-        ORDER BY 
-            days_overdue DESC
-        LIMIT 5
-    ");
-    if ($stmt) {
-        $overdueInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-} catch (PDOException $e) {
-    error_log("Overdue invoices error: " . $e->getMessage());
-}
+$overdueInvoices = getOpenInvoicesReport($pdo, $school_id);
 
-// Get monthly income for chart (last 6 months)
-$monthlyIncome = [];
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            DATE_FORMAT(payment_date, '%Y-%m') as month,
-            SUM(amount) as monthly_income
-        FROM 
-            payments
-        WHERE 
-            payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
-        GROUP BY 
-            DATE_FORMAT(payment_date, '%Y-%m')
-        ORDER BY 
-            month ASC
-    ");
-    if ($stmt) {
-        $monthlyIncome = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-} catch (PDOException $e) {
-    error_log("Monthly income error: " . $e->getMessage());
-}
 
-// Get monthly expenses for chart (last 6 months)
-$monthlyExpenses = [];
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            DATE_FORMAT(transaction_date, '%Y-%m') as month,
-            SUM(amount) as monthly_expense
-        FROM 
-            expenses
-        WHERE 
-            transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
-        GROUP BY 
-            DATE_FORMAT(transaction_date, '%Y-%m')
-        ORDER BY 
-            month ASC
-    ");
-    if ($stmt) {
-        $monthlyExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-} catch (PDOException $e) {
-    error_log("Monthly expenses error: " . $e->getMessage());
-}
-
-// Generate chart data for last 6 months
-$currentDate = new DateTime();
+// Get monthly income/expense for chart (last 6 months)
 $monthKeys = [];
 $monthLabels = [];
 for ($i = 5; $i >= 0; $i--) {
-    $date = clone $currentDate;
-    $date->modify("-$i months");
+    $date = new DateTime("first day of -$i month");
     $monthKeys[] = $date->format('Y-m');
     $monthLabels[] = $date->format('M');
 }
@@ -204,52 +51,47 @@ for ($i = 5; $i >= 0; $i--) {
 $chartIncomeData = array_fill(0, 6, 0);
 $chartExpenseData = array_fill(0, 6, 0);
 
+$stmt = $pdo->prepare("
+    SELECT DATE_FORMAT(payment_date, '%Y-%m') as month, SUM(amount) as monthly_income
+    FROM payments
+    WHERE payment_date >= ? AND school_id = ?
+    GROUP BY month ORDER BY month ASC
+");
+$stmt->execute([date('Y-m-01', strtotime('-5 months')), $school_id]);
+$monthlyIncome = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 foreach ($monthlyIncome as $income) {
     $index = array_search($income['month'], $monthKeys);
-    if ($index !== false) {
-        $chartIncomeData[$index] = (float)$income['monthly_income'];
-    }
+    if ($index !== false) $chartIncomeData[$index] = (float)$income['monthly_income'];
 }
+
+$stmt = $pdo->prepare("
+    SELECT DATE_FORMAT(transaction_date, '%Y-%m') as month, SUM(amount) as monthly_expense
+    FROM expenses
+    WHERE transaction_date >= ? AND school_id = ?
+    GROUP BY month ORDER BY month ASC
+");
+$stmt->execute([date('Y-m-01', strtotime('-5 months')), $school_id]);
+$monthlyExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 foreach ($monthlyExpenses as $expense) {
     $index = array_search($expense['month'], $monthKeys);
-    if ($index !== false) {
-        $chartExpenseData[$index] = (float)$expense['monthly_expense'];
-    }
+    if ($index !== false) $chartExpenseData[$index] = (float)$expense['monthly_expense'];
 }
+
 
 // Get top students by amount paid
-$topStudents = [];
-try {
-    $stmt = $pdo->query("
-        SELECT 
-            s.id,
-            s.name,
-            SUM(p.amount) as total_paid
-        FROM 
-            students s
-        JOIN 
-            invoices i ON s.id = i.student_id
-        JOIN 
-            payments p ON i.id = p.invoice_id
-        GROUP BY 
-            s.id
-        ORDER BY 
-            total_paid DESC
-        LIMIT 5
-    ");
-    if ($stmt) {
-        $topStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-} catch (PDOException $e) {
-    error_log("Top students error: " . $e->getMessage());
-}
+$stmt = $pdo->prepare("
+    SELECT s.id, s.name, SUM(p.amount) as total_paid
+    FROM students s
+    JOIN payments p ON s.id = p.student_id
+    WHERE s.school_id = ?
+    GROUP BY s.id, s.name
+    ORDER BY total_paid DESC LIMIT 5
+");
+$stmt->execute([$school_id]);
+$topStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Check if we should refresh the dashboard (used by other pages)
-$refreshScript = '';
-if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
-    $refreshScript = "<script>localStorage.removeItem('dashboard_needs_refresh');</script>";
-}
 ?>
 
 <!DOCTYPE html>
@@ -972,9 +814,11 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
             <div class="overdue-card">
                 <div class="card-header">
                     <h3><i class="fas fa-exclamation-triangle"></i> Overdue Invoices</h3>
+                    <?php if (!empty($overdueInvoices)): ?>
                     <div class="priority-indicator high">
                         <span><?php echo count($overdueInvoices); ?></span> Overdue
                     </div>
+                    <?php endif; ?>
                 </div>
                 <div class="overdue-list">
                     <?php if (empty($overdueInvoices)): ?>
@@ -985,9 +829,24 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
                         </div>
                     <?php else: ?>
                         <?php foreach($overdueInvoices as $index => $invoice): ?>
+                            <?php
+                                // --- FIX STARTS HERE ---
+                                // Calculate the number of days the invoice is overdue.
+                                $days_overdue = 0;
+                                if (!empty($invoice['due_date'])) {
+                                    $dueDate = new DateTime($invoice['due_date']);
+                                    $now = new DateTime();
+                                    // Ensure we only calculate for dates in the past.
+                                    if ($dueDate < $now) {
+                                        $interval = $now->diff($dueDate);
+                                        $days_overdue = $interval->days;
+                                    }
+                                }
+                                // --- FIX ENDS HERE ---
+                            ?>
                             <div class="overdue-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
                                 <div class="overdue-priority">
-                                    <div class="priority-dot <?php echo ($invoice['days_overdue'] > 30) ? 'critical' : (($invoice['days_overdue'] > 15) ? 'high' : 'medium'); ?>"></div>
+                                    <div class="priority-dot <?php echo ($days_overdue > 30) ? 'critical' : (($days_overdue > 15) ? 'high' : 'medium'); ?>"></div>
                                 </div>
                                 <div class="overdue-details">
                                     <div class="invoice-info">
@@ -998,7 +857,7 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
                                     </div>
                                     <div class="overdue-meta">
                                         Due: <?php echo date('M d, Y', strtotime($invoice['due_date'])); ?> • 
-                                        <span class="days-overdue"><?php echo $invoice['days_overdue']; ?> days late</span>
+                                        <span class="days-overdue"><?php echo $days_overdue; ?> days late</span>
                                     </div>
                                 </div>
                                 <div class="overdue-amount">
@@ -1008,11 +867,13 @@ if (isset($_GET['refresh']) && $_GET['refresh'] == 'true') {
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </div>
+                <?php if (!empty($overdueInvoices)): ?>
                 <div class="card-footer">
                     <a href="#" class="view-all-btn">
                         Manage Invoices <i class="fas fa-arrow-right"></i>
                     </a>
                 </div>
+                <?php endif; ?>
             </div>
             
             <!-- Top Students -->

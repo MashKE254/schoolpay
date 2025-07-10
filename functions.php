@@ -1,1030 +1,659 @@
 <?php
-// functions.php
-// Contains helper functions
+// functions.php - Final, Consolidated, and Multi-Tenant Aware
+// Contains all helper functions for the application, each defined only once.
 
-// Example: Get dashboard summary (dummy data or real query)
-function getDashboardSummary($pdo) {
-    try {
-        // Get total income (revenue accounts)
-        $stmt = $pdo->query("
-            SELECT COALESCE(SUM(amount), 0) as total_income
-            FROM journal_entries je
-            JOIN chart_of_accounts ca ON je.credit_account = ca.id
-            WHERE ca.account_type = 'Revenue'
-        ");
-        $total_income = $stmt->fetchColumn();
+/**
+ * Records an action in the audit log.
+ *
+ * @param PDO $pdo The database connection object.
+ * @param string $action_type The type of action (CREATE, UPDATE, DELETE).
+ * @param string $target_table The database table that was affected.
+ * @param int|null $target_id The ID of the record that was affected.
+ * @param array $details An associative array containing data about the change.
+ * For UPDATE, use ['before' => $old_data, 'after' => $new_data].
+ * For CREATE/DELETE, use ['data' => $data].
+ * * Formats the JSON details from an audit log entry into readable HTML.
+ * @param array $log The audit log row.
+ * @return string The formatted HTML.
+ */
 
-        // Get total expenses (expense accounts)
-        $stmt = $pdo->query("
-            SELECT COALESCE(SUM(amount), 0) as total_expenses
-            FROM journal_entries je
-            JOIN chart_of_accounts ca ON je.debit_account = ca.id
-            WHERE ca.account_type = 'Expense'
-        ");
-        $total_expenses = $stmt->fetchColumn();
+ function getUndepositedFundsAccountId(PDO $pdo, int $school_id): int {
+    // 1. Try to find the existing account
+    $stmt = $pdo->prepare("SELECT id FROM accounts WHERE school_id = ? AND account_name = 'Undeposited Funds'");
+    $stmt->execute([$school_id]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Get current balance (assets - liabilities)
-        $stmt = $pdo->query("
-            SELECT 
-                (SELECT COALESCE(SUM(amount), 0) 
-                 FROM journal_entries je 
-                 JOIN chart_of_accounts ca ON je.debit_account = ca.id 
-                 WHERE ca.account_type = 'Asset')
-                -
-                (SELECT COALESCE(SUM(amount), 0) 
-                 FROM journal_entries je 
-                 JOIN chart_of_accounts ca ON je.credit_account = ca.id 
-                 WHERE ca.account_type = 'Liability')
-            as current_balance
-        ");
-        $current_balance = $stmt->fetchColumn();
+    if ($account) {
+        // 2. If found, return its ID
+        return (int)$account['id'];
+    } else {
+        // 3. If not found, create it
+        // Generate a unique account code to avoid conflicts
+        $new_account_code = '1900-' . $school_id;
+        
+        $stmt_create = $pdo->prepare(
+            "INSERT INTO accounts (school_id, account_code, account_name, account_type, balance) 
+             VALUES (?, ?, 'Undeposited Funds', 'asset', 0.00)"
+        );
+        $stmt_create->execute([$school_id, $new_account_code]);
+        
+        $new_account_id = (int)$pdo->lastInsertId();
 
-        // Get total students (assuming we have a students table)
-        $stmt = $pdo->query("SELECT COUNT(*) FROM students");
-        $total_students = $stmt->fetchColumn();
-    
-    return [
-        'total_income' => $total_income,
-        'total_expenses' => $total_expenses,
-            'current_balance' => $current_balance,
-        'total_students' => $total_students
-    ];
-    } catch (PDOException $e) {
-        error_log("Error getting dashboard summary: " . $e->getMessage());
-        return [
-            'total_income' => 0,
-            'total_expenses' => 0,
-            'current_balance' => 0,
-            'total_students' => 0
-        ];
+        if ($new_account_id > 0) {
+            // Log the automatic creation of this critical account
+            log_audit($pdo, 'SYSTEM', 'accounts', $new_account_id, ['data' => ['note' => 'Auto-created Undeposited Funds account.']]);
+            return $new_account_id;
+        } else {
+            throw new Exception("Could not create a required 'Undeposited Funds' account.");
+        }
     }
 }
 
-// Example: Get list of invoices for customer center
-function getInvoices($pdo) {
-    $stmt = $pdo->query("
-        SELECT i.*, 
-               s.name as student_name,
-               s.id as student_id,
-               (SELECT SUM(quantity * unit_price) 
-                FROM invoice_items 
-                WHERE invoice_id = i.id) as total_amount,
-               (SELECT SUM(amount) 
-                FROM payments 
-                WHERE invoice_id = i.id) as paid_amount
-        FROM invoices i
-        JOIN students s ON i.student_id = s.id
-        ORDER BY i.invoice_date DESC
-    ");
+function getAccountsByType(PDO $pdo, int $school_id, string $account_type): array {
+    $stmt = $pdo->prepare(
+        "SELECT id, account_code, account_name, balance 
+         FROM accounts 
+         WHERE school_id = ? AND account_type = ? 
+         ORDER BY account_name ASC"
+    );
+    $stmt->execute([$school_id, $account_type]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
-
-/**
- * Fetch all payroll records.
- *
- * @param PDO $pdo
- * @return array
- */
-function getPayrollRecords(PDO $pdo): array
+function format_audit_details(array $log): string
 {
-    // Select the actual column names, and alias them to match what your view expects
-    $sql = "
-        SELECT
-            id,
-            employee_name,
-            employee_type,
-            hours,
-            rate,
-            gross_pay,
-            tax,
-            insurance,
-            retirement,
-            other_deduction,
-            total_deductions,
-            net_pay,
-            pay_date
-        FROM payroll
-        ORDER BY pay_date DESC
-    ";
+    $details = json_decode($log['details'], true);
+    if (json_last_error() !== JSON_ERROR_NONE || empty($details)) {
+        return 'No details available.';
+    }
 
-    $stmt = $pdo->query($sql);
+    $output = '<div class="details-container"><ul>';
+
+    switch ($log['action_type']) {
+        case 'UPDATE':
+            $before = $details['before'] ?? [];
+            $after = $details['after'] ?? [];
+            $has_changes = false;
+
+            foreach ($after as $key => $newValue) {
+                // Ignore keys we don't want to show in the log
+                if (in_array($key, ['password', 'updated_at'])) continue;
+
+                $oldValue = $before[$key] ?? null;
+
+                if ($newValue != $oldValue) {
+                    $has_changes = true;
+                    $output .= '<li>';
+                    $output .= 'Changed <strong class="field-name">' . htmlspecialchars($key) . '</strong>';
+                    $output .= ' from <span class="old-value">' . htmlspecialchars($oldValue ?? 'NULL') . '</span>';
+                    $output .= ' to <span class="new-value">' . htmlspecialchars($newValue ?? 'NULL') . '</span>';
+                    $output .= '</li>';
+                }
+            }
+            if (!$has_changes) $output .= '<li>No displayable fields were changed.</li>';
+            break;
+
+        case 'CREATE':
+        case 'DELETE':
+            $data = $details['data'] ?? [];
+            if (empty($data)) {
+                 $output .= '<li>No data recorded.</li>';
+            } else {
+                foreach ($data as $key => $value) {
+                    if (in_array($key, ['password'])) continue;
+                    if (is_array($value)) $value = json_encode($value); // Handle nested arrays like invoice items
+                    $output .= '<li><strong class="field-name">' . htmlspecialchars($key) . '</strong>: ' . htmlspecialchars($value ?? 'NULL') . '</li>';
+                }
+            }
+            break;
+
+        default:
+            $output .= '<li>' . htmlspecialchars(json_encode($details, JSON_PRETTY_PRINT)) . '</li>';
+            break;
+    }
+
+    $output .= '</ul></div>';
+    return $output;
+}
+
+
+function log_audit(PDO $pdo, string $action_type, string $target_table, ?int $target_id, array $details) {
+    // Session must be started on the calling page
+    if (session_status() == PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $school_id = $_SESSION['school_id'] ?? 0;
+    $user_id = $_SESSION['user_id'] ?? 0; // Assuming you store user_id in session on login
+    $user_name = $_SESSION['user_name'] ?? 'System'; // Assuming you store user_name
+    $ip_address = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+    // Don't log if critical session info is missing
+    if ($school_id === 0 || $user_id === 0) {
+        return;
+    }
+
+    $sql = "INSERT INTO audit_log 
+                (school_id, user_id, user_name, ip_address, action_type, target_table, target_id, details) 
+            VALUES 
+                (?, ?, ?, ?, ?, ?, ?, ?)";
+    
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            $school_id,
+            $user_id,
+            $user_name,
+            $ip_address,
+            $action_type,
+            $target_table,
+            $target_id,
+            json_encode($details)
+        ]);
+    } catch (PDOException $e) {
+        // In a real production system, you might log this error to a file
+        // For now, we'll fail silently to not interrupt the user's action.
+        error_log('Audit Log Failed: ' . $e->getMessage());
+    }
+}
+
+// =================================================================
+// DASHBOARD & GENERAL SUMMARY FUNCTIONS
+// =================================================================
+
+function getDashboardSummary($pdo, $school_id) {
+    try {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM students WHERE school_id = ?");
+        $stmt->execute([$school_id]);
+        $total_students = $stmt->fetchColumn();
+
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE school_id = ? AND payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)");
+        $stmt->execute([$school_id]);
+        $total_income = $stmt->fetchColumn();
+
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE school_id = ?");
+        $stmt->execute([$school_id]);
+        $total_expenses = $stmt->fetchColumn();
+
+        return [
+            'total_income' => $total_income,
+            'total_expenses' => $total_expenses,
+            'current_balance' => $total_income - $total_expenses,
+            'total_students' => $total_students
+        ];
+    } catch (PDOException $e) {
+        error_log("Error in getDashboardSummary: " . $e->getMessage());
+        return ['total_income' => 0, 'total_expenses' => 0, 'current_balance' => 0, 'total_students' => 0];
+    }
+}
+
+// =================================================================
+// STUDENT & CLASS FUNCTIONS
+// =================================================================
+
+function getStudents($pdo, $school_id) {
+    // MODIFIED: Changed ORDER BY clause to sort by student ID number numerically.
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE school_id = ? ORDER BY CAST(student_id_no AS UNSIGNED) ASC");
+    $stmt->execute([$school_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Example: Get report data (P&L) – dummy data
-function getProfitLossData($pdo, $startDate, $endDate) {
-    // Get total income (from payments)
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as income 
-                          FROM payments 
-                          WHERE payment_date BETWEEN :start AND :end");
-    $stmt->execute([':start' => $startDate, ':end' => $endDate]);
-    $income = $stmt->fetchColumn();
-
-    // Get total expenses
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as expenses 
-                          FROM expenses 
-                          WHERE transaction_date BETWEEN :start AND :end");
-    $stmt->execute([':start' => $startDate, ':end' => $endDate]);
-    $expenses = $stmt->fetchColumn();
-
-    return [
-        'income' => $income,
-        'expenses' => $expenses,
-        'net_income' => $income - $expenses
-    ];
-}
-// Get all students
-function getStudents($pdo) {
-    $stmt = $pdo->query("SELECT id, name, email, phone, address, created_at FROM students ORDER BY name");
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// Get student by ID
-function getStudentById($pdo, $student_id) {
-    $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
-    $stmt->execute([$student_id]);
+function getStudentById($pdo, $student_id, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ? AND school_id = ?");
+    $stmt->execute([$student_id, $school_id]);
     return $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
-// Get student invoices
-function getStudentInvoices($pdo, $student_id) {
+function getClasses($pdo, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM classes WHERE school_id = ? ORDER BY name");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getStudentsByClass($pdo, $class_id, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE class_id = ? AND school_id = ?");
+    $stmt->execute([$class_id, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getStudentInvoices($pdo, $student_id, $school_id) {
     $stmt = $pdo->prepare("
         SELECT i.*, 
-               (SELECT SUM(quantity * unit_price) 
-                FROM invoice_items 
-                WHERE invoice_id = i.id) as total_amount
+               (SELECT SUM(quantity * unit_price) FROM invoice_items WHERE invoice_id = i.id) as total_amount
         FROM invoices i
-        WHERE i.student_id = ?
+        WHERE i.student_id = ? AND i.school_id = ?
         ORDER BY i.invoice_date DESC
     ");
-    $stmt->execute([$student_id]);
+    $stmt->execute([$student_id, $school_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// functions.php - Update the getInvoiceDetails function
+function getStudentTransactions($pdo, $student_id, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT p.id, p.payment_date as date, p.amount, p.payment_method, p.memo, p.invoice_id, i.id as invoice_number
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        WHERE p.student_id = ? AND p.school_id = ?
+        ORDER BY p.payment_date ASC
+    ");
+    $stmt->execute([$student_id, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
-function getInvoiceDetails($pdo, $invoice_id) {
+
+// =================================================================
+// INVOICE & PAYMENT FUNCTIONS
+// =================================================================
+
+function getInvoices($pdo, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT i.*, s.name as student_name,
+               (SELECT SUM(quantity * unit_price) FROM invoice_items WHERE invoice_id = i.id) as total_amount,
+               (SELECT SUM(amount) FROM payments WHERE invoice_id = i.id) as paid_amount
+        FROM invoices i
+        JOIN students s ON i.student_id = s.id
+        WHERE i.school_id = ?
+        ORDER BY i.invoice_date DESC
+    ");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getInvoiceDetails($pdo, $invoice_id, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT 
+            i.*, 
+            s.name as student_name, s.email as student_email, s.phone as student_phone, s.address as student_address,
+            sch.name as school_name,
+            sch_d.address as school_address,
+            sch_d.phone as school_phone,
+            sch_d.email as school_email,
+            sch_d.logo_url as school_logo_url
+        FROM invoices i
+        JOIN students s ON i.student_id = s.id
+        LEFT JOIN schools sch ON i.school_id = sch.id
+        LEFT JOIN school_details sch_d ON i.school_id = sch_d.school_id
+        WHERE i.id = ? AND i.school_id = ?
+    ");
+    $stmt->execute([$invoice_id, $school_id]);
+    $invoice = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$invoice) return null;
+
+    $stmt = $pdo->prepare("
+        SELECT ii.*, i.name as item_name, i.price as unit_price
+        FROM invoice_items ii
+        JOIN items i ON ii.item_id = i.id
+        WHERE ii.invoice_id = ? AND i.school_id = ?
+    ");
+    $stmt->execute([$invoice_id, $school_id]);
+    $invoice['items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    return $invoice;
+}
+
+function createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, $items, $notes = '') {
     try {
-        // Get invoice details with student information
-        $stmt = $pdo->prepare("
-            SELECT i.*, s.name as student_name, s.email, s.phone, s.address
-            FROM invoices i
-            JOIN students s ON i.student_id = s.id
-            WHERE i.id = ?
-        ");
-        $stmt->execute([$invoice_id]);
-        $invoice = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$invoice) {
-            return null;
-        }
-        
-        // Get invoice items
-        $stmt = $pdo->prepare("
-            SELECT ii.*, i.name as item_name, i.price as unit_price
-            FROM invoice_items ii
-            JOIN items i ON ii.item_id = i.id
-            WHERE ii.invoice_id = ?
-        ");
-        $stmt->execute([$invoice_id]);
-        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Assign items to the invoice (no total_amount recalculation)
-        $invoice['items'] = $items;
-        
-        return $invoice;
-    } catch (PDOException $e) {
-        error_log("Error getting invoice details: " . $e->getMessage());
-        return null;
-    }
-}
-
-// Get student transactions (invoices and payments)
-function getStudentTransactions($pdo, $student_id) {
-    // Get invoices
-    // Update the payment query to:
-$stmt = $pdo->prepare("
-    SELECT 
-        p.id,
-        p.payment_date as date,
-        p.amount,
-        p.payment_method,
-        p.memo,
-        p.invoice_id,
-        i.id as invoice_number
-    FROM payments p
-    LEFT JOIN invoices i ON p.invoice_id = i.id
-    WHERE p.student_id = ?
-    ORDER BY p.payment_date ASC
-");
-    $stmt->execute([$student_id, $student_id]);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// Get all available items
-function getItems($pdo) {
-    $stmt = $pdo->query("SELECT * FROM items ORDER BY name");
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// Create a new invoice
-function createInvoice($pdo, $student_id, $invoice_date, $due_date, $items, $notes = '') {
-    try {
-        // Start transaction
         $pdo->beginTransaction();
-        
-        // Verify student exists
-        $stmt = $pdo->prepare("SELECT id FROM students WHERE id = ?");
-        $stmt->execute([$student_id]);
-        if (!$stmt->fetch()) {
-            throw new Exception("Student with ID $student_id not found");
-        }
-        
-        // Insert invoice
-        $stmt = $pdo->prepare("
-            INSERT INTO invoices (student_id, invoice_date, due_date, notes) 
-            VALUES (?, ?, ?, ?)
-        ");
-        $stmt->execute([$student_id, $invoice_date, $due_date, $notes]);
+        $stmt = $pdo->prepare("INSERT INTO invoices (school_id, student_id, invoice_date, due_date, notes) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$school_id, $student_id, $invoice_date, $due_date, $notes]);
         $invoice_id = $pdo->lastInsertId();
-        
-        // Insert invoice items
-        $stmt = $pdo->prepare("
-            INSERT INTO invoice_items (invoice_id, item_id, quantity, unit_price) 
-            VALUES (?, ?, ?, ?)
-        ");
-        
+
+        $stmt = $pdo->prepare("INSERT INTO invoice_items (school_id, invoice_id, item_id, quantity, unit_price) VALUES (?, ?, ?, ?, ?)");
         foreach ($items as $item) {
-            if (!isset($item['item_id']) || !isset($item['quantity']) || !isset($item['unit_price'])) {
-                throw new Exception("Invalid item data");
-            }
-            
-            $stmt->execute([
-                $invoice_id,
-                $item['item_id'],
-                $item['quantity'],
-                $item['unit_price']
-            ]);
+            $stmt->execute([$school_id, $invoice_id, $item['item_id'], $item['quantity'], $item['unit_price']]);
         }
-        
-        // Commit transaction
         $pdo->commit();
         return $invoice_id;
     } catch (PDOException $e) {
-        // Rollback transaction on error
         $pdo->rollBack();
         throw $e;
     }
 }
 
-// Update invoice status
-function updateInvoiceStatus($pdo, $invoice_id, $status) {
-    $stmt = $pdo->prepare("UPDATE invoices SET status = ? WHERE id = ?");
-    return $stmt->execute([$status, $invoice_id]);
-}
-
-// Record a payment
-function recordPayment($pdo, $invoice_id, $student_id, $payment_date, $amount, $method = null, $memo = '') {
+function getUnpaidInvoices($pdo, $student_id, $school_id) {
     $stmt = $pdo->prepare("
-        INSERT INTO payments (invoice_id, student_id, payment_date, amount, method, memo)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ");
-    return $stmt->execute([$invoice_id, $student_id, $payment_date, $amount, $method, $memo]);
-}
-
-// Create a new item
-function createItem($pdo, $name, $price, $description = '', $parent_id = null, $item_type = 'parent') {
-    try {
-        // Check if the new columns exist
-        $stmt = $pdo->query("SHOW COLUMNS FROM items LIKE 'item_type'");
-        $columnExists = $stmt->rowCount() > 0;
-        
-        if ($columnExists) {
-            $stmt = $pdo->prepare("INSERT INTO items (name, price, description, parent_id, item_type) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$name, $price, $description, $parent_id, $item_type]);
-        } else {
-            $stmt = $pdo->prepare("INSERT INTO items (name, price, description) VALUES (?, ?, ?)");
-            $stmt->execute([$name, $price, $description]);
-        }
-        
-        return $pdo->lastInsertId();
-    } catch (PDOException $e) {
-        // If there's any error, try the basic insert
-        $stmt = $pdo->prepare("INSERT INTO items (name, price, description) VALUES (?, ?, ?)");
-        $stmt->execute([$name, $price, $description]);
-        return $pdo->lastInsertId();
-    }
-}
-
-// Get all items with their sub-items
-function getItemsWithSubItems($pdo) {
-    try {
-        // First check if the item_type column exists
-        $stmt = $pdo->query("SHOW COLUMNS FROM items LIKE 'item_type'");
-        $columnExists = $stmt->rowCount() > 0;
-        
-        if (!$columnExists) {
-            // If column doesn't exist, just return regular items
-            $stmt = $pdo->query("SELECT * FROM items ORDER BY name");
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        
-        // Get all parent items
-        $stmt = $pdo->query("
-            SELECT * FROM items 
-            WHERE item_type = 'parent' 
-            ORDER BY name
-        ");
-        $parentItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Get all child items
-        $stmt = $pdo->query("
-            SELECT * FROM items 
-            WHERE item_type = 'child' 
-            ORDER BY name
-        ");
-        $childItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Organize child items under their parents
-        $items = [];
-        foreach ($parentItems as $parent) {
-            $parent['sub_items'] = [];
-            foreach ($childItems as $child) {
-                if ($child['parent_id'] == $parent['id']) {
-                    $parent['sub_items'][] = $child;
-                }
-            }
-            $items[] = $parent;
-        }
-        
-        return $items;
-    } catch (PDOException $e) {
-        // If there's any error, just return regular items
-        $stmt = $pdo->query("SELECT * FROM items ORDER BY name");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-}
-
-// Update an existing item
-function updateItem($pdo, $id, $name, $price, $description = '', $parent_id = null, $item_type = 'parent') {
-    try {
-        // Check if the new columns exist
-        $stmt = $pdo->query("SHOW COLUMNS FROM items LIKE 'item_type'");
-        $columnExists = $stmt->rowCount() > 0;
-        
-        if ($columnExists) {
-            $stmt = $pdo->prepare("UPDATE items SET name = ?, price = ?, description = ?, parent_id = ?, item_type = ? WHERE id = ?");
-            $stmt->execute([$name, $price, $description, $parent_id, $item_type, $id]);
-        } else {
-            $stmt = $pdo->prepare("UPDATE items SET name = ?, price = ?, description = ? WHERE id = ?");
-            $stmt->execute([$name, $price, $description, $id]);
-        }
-        
-        return true;
-    } catch (PDOException $e) {
-        throw $e;
-    }
-}
-
-// Delete an item
-function deleteItem($pdo, $id) {
-    try {
-        $stmt = $pdo->prepare("DELETE FROM items WHERE id = ?");
-        return $stmt->execute([$id]);
-    } catch (PDOException $e) {
-        throw $e;
-    }
-}
-
-// Get unpaid invoices for a student
-function getUnpaidInvoices($pdo, $student_id) {
-    $stmt = $pdo->prepare("
-        SELECT 
-            i.id,
-            i.invoice_date,
-            i.due_date,
-            i.total_amount,
-            COALESCE(SUM(p.amount), 0) AS paid_amount,
-            (i.total_amount - COALESCE(SUM(p.amount), 0)) AS balance
+        SELECT i.id, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) AS balance
         FROM invoices i
-        LEFT JOIN payments p ON p.invoice_id = i.id
-        WHERE i.student_id = ?
-        GROUP BY i.id
-        HAVING balance > 0
+        WHERE i.student_id = ? AND i.school_id = ? AND (i.total_amount - i.paid_amount) > 0.009
+        ORDER BY i.invoice_date ASC
     ");
-    $stmt->execute([$student_id]);
+    $stmt->execute([$student_id, $school_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function getInvoiceBalance($pdo, $invoice_id) {
-    try {
-        $stmt = $pdo->prepare("
-            SELECT (total_amount - paid_amount) AS balance 
-            FROM invoices 
-            WHERE id = ?
-        ");
-        $stmt->execute([$invoice_id]);
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error getting invoice balance: " . $e->getMessage());
-        return 0;
-    }
+function getInvoiceBalance($pdo, $invoice_id, $school_id) {
+    $stmt = $pdo->prepare("SELECT (total_amount - paid_amount) AS balance FROM invoices WHERE id = ? AND school_id = ?");
+    $stmt->execute([$invoice_id, $school_id]);
+    return $stmt->fetchColumn();
 }
 
-// Record a payment receipt
-function recordPaymentReceipt($pdo, $student_id, $payment_date, $amount, $method, $memo, $invoice_payments) {
-    try {
-        $pdo->beginTransaction();
-        
-        // Insert payment receipt
-        $stmt = $pdo->prepare("
-            INSERT INTO payment_receipts (student_id, payment_date, amount, method, memo)
-            VALUES (?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([$student_id, $payment_date, $amount, $method, $memo]);
-        $receipt_id = $pdo->lastInsertId();
-        
-        // Record payments for each invoice
-        foreach ($invoice_payments as $invoice_id => $payment_amount) {
-            if ($payment_amount > 0) {
-                $stmt = $pdo->prepare("
-                    INSERT INTO payments (receipt_id, invoice_id, student_id, amount)
-                    VALUES (?, ?, ?, ?)
-                ");
-                $stmt->execute([$receipt_id, $invoice_id, $student_id, $payment_amount]);
-                
-                // Update invoice status if fully paid
-                $stmt = $pdo->prepare("
-                    SELECT 
-                        (SELECT SUM(amount) FROM payments WHERE invoice_id = ?) as total_paid,
-                        (SELECT SUM(quantity * unit_price) FROM invoice_items WHERE invoice_id = ?) as total_amount
-                ");
-                $stmt->execute([$invoice_id, $invoice_id]);
-                $result = $stmt->fetch(PDO::FETCH_ASSOC);
-                
-                if ($result['total_paid'] >= $result['total_amount']) {
-                    $stmt = $pdo->prepare("UPDATE invoices SET status = 'Paid' WHERE id = ?");
-                    $stmt->execute([$invoice_id]);
-                }
-            }
-        }
-        
-        $pdo->commit();
-        return $receipt_id;
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        throw $e;
-    }
-}
-
-// Get payment receipt details
-function getAllReceipts($pdo) {
+function getAllReceipts($pdo, $school_id) {
     $stmt = $pdo->prepare("
-        SELECT r.*, s.name AS student_name 
+        SELECT r.*, s.name AS student_name
         FROM payment_receipts r
         JOIN students s ON s.id = r.student_id
+        WHERE r.school_id = ?
         ORDER BY r.payment_date DESC
     ");
-    $stmt->execute();
+    $stmt->execute([$school_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
-function createJournalEntry($pdo, $date, $debit_account, $credit_account, $amount, $description = '') {
-    try {
-        $stmt = $pdo->prepare("
-            INSERT INTO journal_entries (date, debit_account, credit_account, amount, description)
-            VALUES (?, ?, ?, ?, ?)
-        ");
-        return $stmt->execute([$date, $debit_account, $credit_account, $amount, $description]);
-    } catch (PDOException $e) {
-        error_log("Error creating journal entry: " . $e->getMessage());
-        return false;
-    }
+
+function getReceiptDetails($pdo, $receipt_id, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT 
+            r.*, 
+            s.name AS student_name,
+            sch.name as school_name,
+            sch_d.address as school_address,
+            sch_d.phone as school_phone,
+            sch_d.email as school_email,
+            sch_d.logo_url as school_logo_url
+        FROM payment_receipts r
+        JOIN students s ON s.id = r.student_id
+        LEFT JOIN schools sch ON r.school_id = sch.id
+        LEFT JOIN school_details sch_d ON r.school_id = sch_d.school_id
+        WHERE r.id = ? AND r.school_id = ?
+    ");
+    $stmt->execute([$receipt_id, $school_id]);
+    return $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
-function getChartOfAccounts($pdo) {
-    try {
-        $stmt = $pdo->query("
-            SELECT id, account_name, account_type, account_code
-            FROM chart_of_accounts
-            ORDER BY account_type, account_code
-        ");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting chart of accounts: " . $e->getMessage());
-        return [];
-    }
+
+// =================================================================
+// ITEMS & CATEGORIES FUNCTIONS
+// =================================================================
+
+function getItems($pdo, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM items WHERE school_id = ? ORDER BY name");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function createAccount($pdo, $account_code, $account_name, $account_type) {
-    try {
-        $stmt = $pdo->prepare("
-            INSERT INTO chart_of_accounts (account_code, account_name, account_type)
-            VALUES (?, ?, ?)
-        ");
-        return $stmt->execute([$account_code, $account_name, $account_type]);
-    } catch (PDOException $e) {
-        error_log("Error creating account: " . $e->getMessage());
-        return false;
-    }
+function createItem($pdo, $school_id, $name, $price, $description = '', $parent_id = null, $item_type = 'parent') {
+    $stmt = $pdo->prepare("INSERT INTO items (school_id, name, price, description, parent_id, item_type) VALUES (?, ?, ?, ?, ?, ?)");
+    $stmt->execute([$school_id, $name, $price, $description, $parent_id, $item_type]);
+    return $pdo->lastInsertId();
 }
 
-function updateAccount($pdo, $id, $account_code, $account_name, $account_type) {
-    try {
-        $stmt = $pdo->prepare("
-            UPDATE chart_of_accounts 
-            SET account_code = ?, account_name = ?, account_type = ?
-            WHERE id = ?
-        ");
-        return $stmt->execute([$account_code, $account_name, $account_type, $id]);
-    } catch (PDOException $e) {
-        error_log("Error updating account: " . $e->getMessage());
-        return false;
+function getItemsWithSubItems($pdo, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM items WHERE school_id = ? AND parent_id IS NULL ORDER BY name");
+    $stmt->execute([$school_id]);
+    $parentItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $stmt = $pdo->prepare("SELECT * FROM items WHERE school_id = ? AND parent_id IS NOT NULL ORDER BY name");
+    $stmt->execute([$school_id]);
+    $childItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($parentItems as &$parent) {
+        $parent['sub_items'] = array_values(array_filter($childItems, fn($child) => $child['parent_id'] == $parent['id']));
     }
+    return $parentItems;
 }
 
-function deleteAccount($pdo, $id) {
-    try {
-        // Check if account has any journal entries
-        $stmt = $pdo->prepare("
-            SELECT COUNT(*) as count 
-            FROM journal_entries 
-            WHERE debit_account = ? OR credit_account = ?
-        ");
-        $stmt->execute([$id, $id]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($result['count'] > 0) {
-            return false; // Account has transactions, cannot delete
-        }
-        
-        $stmt = $pdo->prepare("DELETE FROM chart_of_accounts WHERE id = ?");
-        return $stmt->execute([$id]);
-    } catch (PDOException $e) {
-        error_log("Error deleting account: " . $e->getMessage());
-        return false;
-    }
+function updateItem($pdo, $item_id, $name, $price, $description, $parent_id, $item_type, $school_id) {
+    $stmt = $pdo->prepare("UPDATE items SET name = ?, price = ?, description = ?, parent_id = ?, item_type = ? WHERE id = ? AND school_id = ?");
+    return $stmt->execute([$name, $price, $description, $parent_id, $item_type, $item_id, $school_id]);
 }
 
-function getAccountBalance($pdo, $account_id) {
+function deleteItem(PDO $pdo, int $item_id, int $school_id): bool {
     try {
-        // Get total debits
-        $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(amount), 0) as total_debits
-            FROM journal_entries
-            WHERE debit_account = ?
-        ");
-        $stmt->execute([$account_id]);
-        $debits = $stmt->fetch(PDO::FETCH_ASSOC)['total_debits'];
-        
-        // Get total credits
-        $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(amount), 0) as total_credits
-            FROM journal_entries
-            WHERE credit_account = ?
-        ");
-        $stmt->execute([$account_id]);
-        $credits = $stmt->fetch(PDO::FETCH_ASSOC)['total_credits'];
-        
-        // Calculate balance based on account type
-        $stmt = $pdo->prepare("
-            SELECT account_type
-            FROM chart_of_accounts
-            WHERE id = ?
-        ");
-        $stmt->execute([$account_id]);
-        $account_type = $stmt->fetch(PDO::FETCH_ASSOC)['account_type'];
-        
-        // For assets and expenses, balance = debits - credits
-        // For liabilities, equity, and revenue, balance = credits - debits
-        if (in_array($account_type, ['Asset', 'Expense'])) {
-            return $debits - $credits;
-        } else {
-            return $credits - $debits;
-        }
-    } catch (PDOException $e) {
-        error_log("Error calculating account balance: " . $e->getMessage());
-        return 0;
-    }
-}
-
-function getChartOfAccountsWithBalances($pdo) {
-    try {
-        $stmt = $pdo->query("
-            SELECT id, account_code, account_name, account_type
-            FROM chart_of_accounts
-            ORDER BY account_type, account_code
-        ");
-        $accounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Add balance to each account
-        foreach ($accounts as &$account) {
-            $account['balance'] = getAccountBalance($pdo, $account['id']);
-        }
-        
-        return $accounts;
-    } catch (PDOException $e) {
-        error_log("Error getting chart of accounts: " . $e->getMessage());
-        return [];
-    }
-}
-
-function createAccountWithBalance($pdo, $account_code, $account_name, $account_type, $starting_balance) {
-    try {
-        // First check if account code already exists
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM chart_of_accounts WHERE account_code = ?");
-        $stmt->execute([$account_code]);
-        if ($stmt->fetchColumn() > 0) {
-            return "Account code already exists. Please use a different code.";
-        }
-
+        // Start a transaction to ensure both operations complete or neither do.
         $pdo->beginTransaction();
-        
-        // Insert the account
-        $stmt = $pdo->prepare("
-            INSERT INTO chart_of_accounts (account_code, account_name, account_type)
-            VALUES (?, ?, ?)
-        ");
-        $stmt->execute([$account_code, $account_name, $account_type]);
-        $account_id = $pdo->lastInsertId();
-        
-        // If there's a starting balance, create a journal entry
-        if ($starting_balance > 0) {
-            // Get the Owner's Equity account ID
-            $stmt = $pdo->prepare("SELECT id FROM chart_of_accounts WHERE account_code = '3000'");
-            $stmt->execute();
-            $equity_account_id = $stmt->fetchColumn();
-            
-            if (!$equity_account_id) {
-                throw new Exception("Owner's Equity account not found. Please create it first.");
-            }
-            
-            // For assets and expenses, debit the account
-            // For liabilities, equity, and revenue, credit the account
-            if (in_array($account_type, ['Asset', 'Expense'])) {
-                $debit_account = $account_id;
-                $credit_account = $equity_account_id;
-            } else {
-                $debit_account = $equity_account_id;
-                $credit_account = $account_id;
-            }
-            
-            $stmt = $pdo->prepare("
-                INSERT INTO journal_entries (date, debit_account, credit_account, amount, description)
-                VALUES (CURDATE(), ?, ?, ?, 'Starting Balance')
-            ");
-            $stmt->execute([$debit_account, $credit_account, $starting_balance]);
-        }
-        
+
+        // Step 1: Delete all child items that belong to this parent item.
+        // This resolves the foreign key constraint issue.
+        $stmt_children = $pdo->prepare(
+            "DELETE FROM items WHERE parent_id = ? AND school_id = ?"
+        );
+        $stmt_children->execute([$item_id, $school_id]);
+
+        // Step 2: Now that any potential children are gone, delete the parent item itself.
+        $stmt_parent = $pdo->prepare(
+            "DELETE FROM items WHERE id = ? AND school_id = ?"
+        );
+        $stmt_parent->execute([$item_id, $school_id]);
+
+        // If both statements executed without error, commit the changes.
         $pdo->commit();
+
         return true;
+        
     } catch (PDOException $e) {
+        // If any error occurs, roll back all changes.
         $pdo->rollBack();
-        error_log("Error creating account with balance: " . $e->getMessage());
-        return "Database error: " . $e->getMessage();
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        error_log("Error creating account with balance: " . $e->getMessage());
-        return $e->getMessage();
+        // Re-throw the exception to be handled by the calling script.
+        throw $e;
     }
 }
 
+// =================================================================
+// PAYROLL FUNCTIONS
+// =================================================================
 
-// Example of updated service payment function
-function recordServicePayment($pdo, $payment_date, $provider_name, $account_id, $amount, $description) {
-    try {
-        // Start transaction
-        $pdo->beginTransaction();
-        
-        // Insert expense transaction
-        $stmt = $pdo->prepare("
-            INSERT INTO expense_transactions 
-            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type) 
-            VALUES (?, ?, ?, ?, 'debit', ?, 'service')
-        ");
-        $stmt->execute([$payment_date, $description, $amount, $account_id, $provider_name]);
-        
-        // Update account balance
-        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
-        $stmt->execute([$amount, $account_id]);
-        
-        // Commit transaction
-        $pdo->commit();
-        return ['success' => true];
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        return ['success' => false, 'error' => $e->getMessage()];
-    }
+function getPayrollRecords(PDO $pdo, $school_id): array {
+    $stmt = $pdo->prepare("
+        SELECT p.*, e.department, e.position
+        FROM payroll p
+        LEFT JOIN employees e ON p.employee_id = e.id
+        WHERE p.school_id = ?
+        ORDER BY p.pay_date DESC
+    ");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Example of updated supplier payment function
-function recordSupplierPayment($pdo, $payment_date, $supplier_name, $invoice_number, $account_id, $amount, $description) {
-    try {
-        // Start transaction
-        $pdo->beginTransaction();
-        
-        // Insert expense transaction
-        $stmt = $pdo->prepare("
-            INSERT INTO expense_transactions 
-            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type, invoice_number) 
-            VALUES (?, ?, ?, ?, 'debit', ?, 'supplier', ?)
-        ");
-        $stmt->execute([$payment_date, $description, $amount, $account_id, $supplier_name, $invoice_number]);
-        
-        // Update account balance
-        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
-        $stmt->execute([$amount, $account_id]);
-        
-        // Commit transaction
-        $pdo->commit();
-        return ['success' => true];
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        return ['success' => false, 'error' => $e->getMessage()];
-    }
-}
-function updateAccountBalance($pdo, $account_id) {
-    try {
-        // Get the account type (to determine if debits increase or decrease the balance)
-        $stmt = $pdo->prepare("SELECT account_type FROM accounts WHERE id = ?");
-        $stmt->execute([$account_id]);
-        $account = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$account) {
-            return false;
-        }
-        
-        // Calculate the new balance based on debits and credits
-        $stmt = $pdo->prepare("
-            SELECT 
-                SUM(CASE WHEN transaction_type = 'debit' THEN amount ELSE 0 END) as total_debit,
-                SUM(CASE WHEN transaction_type = 'credit' THEN amount ELSE 0 END) as total_credit
-            FROM expense_transactions 
-            WHERE account_id = ?
-        ");
-        $stmt->execute([$account_id]);
-        $totals = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        $totalDebit = $totals['total_debit'] ?? 0;
-        $totalCredit = $totals['total_credit'] ?? 0;
-        
-        // Calculate balance based on account type
-        // Assets and Expenses increase with debits, decrease with credits
-        // Liabilities, Equity, and Revenue increase with credits, decrease with debits
-        $balance = 0;
-        
-        if (in_array($account['account_type'], ['Assets', 'Expenses'])) {
-            $balance = $totalDebit - $totalCredit;
-        } else {
-            $balance = $totalCredit - $totalDebit;
-        }
-        
-        // Update the account balance
-        $update = $pdo->prepare("UPDATE accounts SET balance = ? WHERE id = ?");
-        $update->execute([$balance, $account_id]);
-        
-        return true;
-    } catch (Exception $e) {
-        error_log("Error updating account balance: " . $e->getMessage());
-        return false;
-    }
-}
-// Example of updated vehicle expense function
-function recordVehicleExpense($pdo, $expense_date, $vehicle_id, $expense_type, $account_id, $amount, $odometer, $description) {
-    try {
-        // Start transaction
-        $pdo->beginTransaction();
-        
-        // Insert expense transaction
-        $stmt = $pdo->prepare("
-            INSERT INTO expense_transactions 
-            (transaction_date, description, amount, account_id, transaction_type, entity_name, entity_type, expense_type, odometer_reading) 
-            VALUES (?, ?, ?, ?, 'debit', ?, 'vehicle', ?, ?)
-        ");
-        $stmt->execute([$expense_date, $description, $amount, $account_id, $vehicle_id, $expense_type, $odometer]);
-        
-        // Update account balance
-        $stmt = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
-        $stmt->execute([$amount, $account_id]);
-        
-        // Commit transaction
-        $pdo->commit();
-        return ['success' => true];
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        return ['success' => false, 'error' => $e->getMessage()];
-    }
+
+// =================================================================
+// REPORTING FUNCTIONS
+// =================================================================
+
+function getProfitLossData($pdo, $startDate, $endDate, $school_id) {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payment_date BETWEEN ? AND ? AND school_id = ?");
+    $stmt->execute([$startDate, $endDate, $school_id]);
+    $income = $stmt->fetchColumn();
+
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE transaction_date BETWEEN ? AND ? AND school_id = ?");
+    $stmt->execute([$startDate, $endDate, $school_id]);
+    $expenses = $stmt->fetchColumn();
+
+    return ['income' => $income, 'expenses' => $expenses, 'net_income' => $income - $expenses];
 }
 
-function getIncomeByCustomer($pdo, $startDate, $endDate) {
-    try {
-        $stmt = $pdo->prepare("
-            SELECT 
-                s.name AS student_name,
-                COALESCE(SUM(p.amount), 0) AS total_payments,
-                MAX(p.payment_date) AS last_payment
-            FROM students s
-            LEFT JOIN payments p ON s.id = p.student_id
-            WHERE p.payment_date BETWEEN :start_date AND :end_date
-            GROUP BY s.id
-            ORDER BY total_payments DESC
-        ");
-        $stmt->execute([
-            ':start_date' => $startDate,
-            ':end_date' => $endDate
-        ]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting income by customer: " . $e->getMessage());
-        return [];
-    }
-}
 
-/**
- * Get Balance Sheet data
- * 
- * @param PDO $pdo Database connection
- * @return array
- */
-function getBalanceSheetData($pdo) {
+function getDetailedPLData($pdo, $startDate, $endDate, $school_id) {
     $data = [
-        'assets' => [],
-        'liabilities' => [],
-        'equity' => [],
-        'total_assets' => 0,
-        'total_liabilities' => 0,
-        'total_equity' => 0,
-        'retained_earnings' => 0,
-        'total_liabilities_equity' => 0
+        'revenue' => ['accounts' => [], 'total' => 0],
+        'expense' => ['accounts' => [], 'total' => 0],
+        'net_income' => 0
     ];
+    
+    // This part of the revenue calculation is simplified for clarity. 
+    // A more direct sum from the `payments` table provides the total income.
+    $stmt_total_revenue = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payment_date BETWEEN :startDate AND :endDate AND school_id = :school_id");
+    $stmt_total_revenue->execute([':startDate' => $startDate, ':endDate' => $endDate, ':school_id' => $school_id]);
+    $total_revenue = $stmt_total_revenue->fetchColumn();
+    
+    // For breakdown, we use a simpler approach based on income categories.
+    $income_categories = getIncomeByCategory($pdo, $startDate, $endDate, $school_id);
+    foreach($income_categories as $cat) {
+        $data['revenue']['accounts'][] = [
+            'account_name' => $cat['category_name'],
+            'total' => $cat['total_income']
+        ];
+    }
+    $data['revenue']['total'] = $total_revenue;
 
-    try {
-        // Get all accounts with balances
-        $accounts = getChartOfAccountsWithBalances($pdo);
-        
-        // Categorize accounts
-        foreach ($accounts as $account) {
-            switch ($account['account_type']) {
-                case 'Asset':
-                    $data['assets'][] = [
-                        'account_name' => $account['account_name'],
-                        'balance' => $account['balance']
-                    ];
-                    $data['total_assets'] += $account['balance'];
-                    break;
-                case 'Liability':
-                    $data['liabilities'][] = [
-                        'account_name' => $account['account_name'],
-                        'balance' => $account['balance']
-                    ];
-                    $data['total_liabilities'] += $account['balance'];
-                    break;
-                case 'Equity':
-                case 'Revenue':  // Include revenue in equity
-                    $data['equity'][] = [
-                        'account_name' => $account['account_name'],
-                        'balance' => $account['balance']
-                    ];
-                    $data['total_equity'] += $account['balance'];
-                    break;
-            }
+
+    // --- Calculate Total Expenses from Expense Accounts ---
+    // This query is correct based on accounting principles.
+    // Ensure expenses are recorded against accounts with the type 'expense'.
+    $sql_expenses = "
+        SELECT
+            a.account_name,
+            SUM(e.amount) as total
+        FROM expenses e
+        JOIN accounts a ON e.account_id = a.id
+        WHERE e.school_id = :school_id
+          AND a.account_type = 'expense'
+          AND e.transaction_type = 'debit'
+          AND e.transaction_date BETWEEN :startDate AND :endDate
+        GROUP BY a.id, a.account_name
+        ORDER BY a.account_name;
+    ";
+    $stmt_expenses = $pdo->prepare($sql_expenses);
+    $stmt_expenses->execute([':school_id' => $school_id, ':startDate' => $startDate, ':endDate' => $endDate]);
+    $data['expense']['accounts'] = $stmt_expenses->fetchAll(PDO::FETCH_ASSOC);
+    $data['expense']['total'] = array_sum(array_column($data['expense']['accounts'], 'total'));
+
+    // Calculate Net Income
+    $data['net_income'] = $data['revenue']['total'] - $data['expense']['total'];
+
+    return $data;
+}
+
+
+function getIncomeByCustomer($pdo, $startDate, $endDate, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT s.name AS student_name, COALESCE(SUM(p.amount), 0) AS total_payments, MAX(p.payment_date) AS last_payment
+        FROM students s
+        LEFT JOIN payments p ON s.id = p.student_id AND p.payment_date BETWEEN ? AND ?
+        WHERE s.school_id = ?
+        GROUP BY s.id
+        ORDER BY total_payments DESC
+    ");
+    $stmt->execute([$startDate, $endDate, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getBalanceSheetData($pdo, $school_id) {
+    $stmt = $pdo->prepare("SELECT account_name, balance FROM accounts WHERE account_type = 'asset' AND school_id = ?");
+    $stmt->execute([$school_id]);
+    $assets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $stmt = $pdo->prepare("SELECT account_name, balance FROM accounts WHERE account_type = 'liability' AND school_id = ?");
+    $stmt->execute([$school_id]);
+    $liabilities = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $stmt = $pdo->prepare("SELECT account_name, balance FROM accounts WHERE account_type = 'equity' AND school_id = ?");
+    $stmt->execute([$school_id]);
+    $equity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $total_assets = array_sum(array_column($assets, 'balance'));
+    $total_liabilities = array_sum(array_column($liabilities, 'balance'));
+    $total_equity = array_sum(array_column($equity, 'balance'));
+
+    // Use the fixed P&L data for retained earnings
+    $plData = getDetailedPLData($pdo, '1970-01-01', date('Y-m-d'), $school_id);
+    $retained_earnings = $plData['net_income'];
+    
+    // Add retained earnings to the equity section for display
+    $total_equity_with_retained = $total_equity + $retained_earnings;
+
+    return [
+        'assets' => $assets, 'liabilities' => $liabilities, 'equity' => $equity,
+        'total_assets' => $total_assets, 'total_liabilities' => $total_liabilities, 'total_equity' => $total_equity_with_retained,
+        'retained_earnings' => $retained_earnings,
+        'total_liabilities_equity' => $total_liabilities + $total_equity_with_retained
+    ];
+}
+
+
+function getOpenInvoicesReport($pdo, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT i.id, s.name AS student_name, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) AS balance
+        FROM invoices i
+        JOIN students s ON i.student_id = s.id
+        WHERE i.school_id = ? AND (i.total_amount - i.paid_amount) > 0
+        ORDER BY i.due_date ASC
+    ");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getIncomeByCategory($pdo, $startDate, $endDate, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT
+            COALESCE(p.name, i.name) AS category_name,
+            SUM(ii.quantity) AS total_quantity,
+            SUM(ii.quantity * ii.unit_price) AS total_income,
+            AVG(ii.unit_price) AS average_price
+        FROM invoice_items ii
+        JOIN invoices inv ON ii.invoice_id = inv.id
+        JOIN items i ON ii.item_id = i.id
+        LEFT JOIN items p ON i.parent_id = p.id
+        WHERE inv.invoice_date BETWEEN ? AND ? AND ii.school_id = ?
+        GROUP BY category_name
+        ORDER BY total_income DESC
+    ");
+    $stmt->execute([$startDate, $endDate, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+
+function getSubcategories($pdo, $categoryId, $startDate, $endDate, $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT i.name, SUM(ii.quantity) AS total_quantity, SUM(ii.quantity * ii.unit_price) AS total_income, AVG(ii.unit_price) AS average_price
+        FROM invoice_items ii
+        JOIN invoices inv ON ii.invoice_id = inv.id
+        JOIN items i ON ii.item_id = i.id
+        WHERE i.parent_id = ? AND inv.invoice_date BETWEEN ? AND ? AND i.school_id = ?
+        GROUP BY i.id, i.name
+        ORDER BY i.name
+    ");
+    $stmt->execute([$categoryId, $startDate, $endDate, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// =================================================================
+// ACCOUNTING & EXPENSE FUNCTIONS
+// =================================================================
+
+function getChartOfAccounts($pdo, $school_id) {
+    $stmt = $pdo->prepare("SELECT * FROM accounts WHERE school_id = ? ORDER BY account_type, account_code");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function createAccount($pdo, $school_id, $account_code, $account_name, $account_type, $starting_balance = 0) {
+    $stmt = $pdo->prepare("INSERT INTO accounts (school_id, account_code, account_name, account_type, balance) VALUES (?, ?, ?, ?, ?)");
+    return $stmt->execute([$school_id, $account_code, $account_name, $account_type, $starting_balance]);
+}
+
+function updateAccount($pdo, $id, $account_code, $account_name, $account_type, $school_id) {
+    $stmt = $pdo->prepare("UPDATE accounts SET account_code = ?, account_name = ?, account_type = ? WHERE id = ? AND school_id = ?");
+    return $stmt->execute([$account_code, $account_name, $account_type, $id, $school_id]);
+}
+
+function deleteAccount($pdo, $id, $school_id) {
+    $stmt = $pdo->prepare("DELETE FROM accounts WHERE id = ? AND school_id = ?");
+    return $stmt->execute([$id, $school_id]);
+}
+
+function updateAccountBalance($pdo, $account_id, $amount, $transaction_type, $school_id) {
+    $stmt = $pdo->prepare("SELECT account_type FROM accounts WHERE id = ? AND school_id = ?");
+    $stmt->execute([$account_id, $school_id]);
+    $account_type = $stmt->fetchColumn();
+
+    if (!$account_type) return;
+
+    $balance_adjustment = 0;
+    
+    // For Asset and Expense accounts, Debits are positive (+) and Credits are negative (-)
+    if (in_array($account_type, ['asset', 'expense'])) {
+        if ($transaction_type === 'debit') {
+            $balance_adjustment = $amount;
+        } else { // 'credit'
+            $balance_adjustment = -$amount;
         }
-        
-        // Calculate retained earnings (net income from beginning of time)
-        $plData = getProfitLossData($pdo, '1970-01-01', date('Y-m-d'));
-        $data['retained_earnings'] = $plData['net_income'];
-        $data['total_equity'] += $data['retained_earnings'];
-        
-        // Calculate total liabilities + equity
-        $data['total_liabilities_equity'] = $data['total_liabilities'] + $data['total_equity'];
-        
-        return $data;
-    } catch (PDOException $e) {
-        error_log("Error getting balance sheet data: " . $e->getMessage());
-        return $data;
+    } 
+    // For Liability, Equity, and Revenue accounts, Credits are positive (+) and Debits are negative (-)
+    else {
+        if ($transaction_type === 'credit') {
+            $balance_adjustment = $amount;
+        } else { // 'debit'
+            $balance_adjustment = -$amount;
+        }
     }
-}
-function getOpenInvoices($pdo) {
-    try {
-        $stmt = $pdo->query("
-            SELECT 
-                i.id,
-                s.name AS student_name,
-                i.invoice_date,
-                i.due_date,
-                i.total_amount,
-                COALESCE(SUM(p.amount), 0) AS paid_amount,
-                (i.total_amount - COALESCE(SUM(p.amount), 0)) AS balance
-            FROM invoices i
-            JOIN students s ON i.student_id = s.id
-            LEFT JOIN payments p ON p.invoice_id = i.id
-            GROUP BY i.id
-            HAVING balance > 0
-            ORDER BY i.due_date ASC
-        ");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting open invoices: " . $e->getMessage());
-        return [];
-    }
-}
-// functions.php - Add this new function
-function getIncomeByItem($pdo, $startDate, $endDate) {
-    try {
-        $stmt = $pdo->prepare("
-            SELECT 
-                COALESCE(p.name, 'Uncategorized') AS category,
-                SUM(ii.quantity) AS total_quantity,
-                SUM(ii.quantity * ii.unit_price) AS total_income,
-                AVG(ii.unit_price) AS average_price
-            FROM invoice_items ii
-            JOIN invoices inv ON ii.invoice_id = inv.id
-            JOIN items i ON ii.item_id = i.id
-            LEFT JOIN items p ON i.parent_id = p.id
-            WHERE inv.invoice_date BETWEEN :start_date AND :end_date
-            GROUP BY category
-            ORDER BY total_income DESC
-        ");
-        $stmt->execute([
-            ':start_date' => $startDate,
-            ':end_date' => $endDate
-        ]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting income by category: " . $e->getMessage());
-        return [];
-    }
-}
-function getIncomeByCategory($pdo, $startDate, $endDate) {
-    try {
-        $stmt = $pdo->prepare("
-            SELECT 
-                COALESCE(p.id, i.id) AS category_id,
-                COALESCE(p.name, i.name) AS category_name,
-                SUM(ii.quantity) AS total_quantity,
-                SUM(ii.quantity * ii.unit_price) AS total_income,
-                AVG(ii.unit_price) AS average_price,
-                CASE 
-                    WHEN COUNT(DISTINCT c.id) > 0 THEN 1 
-                    ELSE 0 
-                END AS has_subcategories
-            FROM invoice_items ii
-            JOIN invoices inv ON ii.invoice_id = inv.id
-            JOIN items i ON ii.item_id = i.id
-            LEFT JOIN items p ON i.parent_id = p.id
-            LEFT JOIN items c ON c.parent_id = i.id
-            WHERE inv.invoice_date BETWEEN :start_date AND :end_date
-            GROUP BY COALESCE(p.id, i.id), COALESCE(p.name, i.name)
-            ORDER BY category_name
-        ");
-        $stmt->execute([
-            ':start_date' => $startDate,
-            ':end_date' => $endDate
-        ]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting income by category: " . $e->getMessage());
-        return [];
-    }
-}
 
-// Get subcategories for a specific category
-function getSubcategories($pdo, $categoryId, $startDate, $endDate) {
-    try {
-        $stmt = $pdo->prepare("
-            SELECT 
-                i.id,
-                i.name,
-                SUM(ii.quantity) AS total_quantity,
-                SUM(ii.quantity * ii.unit_price) AS total_income,
-                AVG(ii.unit_price) AS average_price
-            FROM invoice_items ii
-            JOIN invoices inv ON ii.invoice_id = inv.id
-            JOIN items i ON ii.item_id = i.id
-            WHERE i.parent_id = :category_id
-            AND inv.invoice_date BETWEEN :start_date AND :end_date
-            GROUP BY i.id, i.name
-            ORDER BY i.name
-        ");
-        $stmt->execute([
-            ':category_id' => $categoryId,
-            ':start_date' => $startDate,
-            ':end_date' => $endDate
-        ]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        error_log("Error getting subcategories: " . $e->getMessage());
-        return [];
-    }
+    $update_stmt = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE id = ? AND school_id = ?");
+    $update_stmt->execute([$balance_adjustment, $account_id, $school_id]);
 }
-
-function getStudentsByClass($pdo, $class_id) {
-    $stmt = $pdo->prepare("SELECT * FROM students WHERE class_id = ?");
-    $stmt->execute([$class_id]);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-function getClasses($pdo) {
-    $stmt = $pdo->query("SELECT * FROM classes");
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-?>

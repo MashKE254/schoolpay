@@ -1,814 +1,404 @@
 <?php
-// Start output buffering at the very beginning
+// Start output buffering to prevent "headers already sent" errors.
 ob_start();
 
-require 'config.php';
-require 'functions.php';
-include 'header.php';
+// Include necessary configuration, functions, and header files.
+require_once 'config.php';
+require_once 'functions.php';
+require_once 'header.php'; // This now handles session and sets $school_id
 
-// Process form submission
+// =================================================================
+// SECTION 1: PHP DATA PROCESSING
+// =================================================================
+
+// HANDLER 1.1: Save New Invoice Template
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['saveTemplate'])) {
+    try {
+        $templateName = trim($_POST['template_name']);
+        $itemsJson = $_POST['template_items'];
+        if (empty($templateName) || empty($itemsJson)) {
+            throw new Exception("Template name and items are required.");
+        }
+        $stmt = $pdo->prepare("INSERT INTO invoice_templates (school_id, name, items) VALUES (?, ?, ?)");
+        if ($stmt->execute([$school_id, $templateName, $itemsJson])) {
+            // Redirect to prevent form resubmission and to show the new template in the list
+            header("Location: " . $_SERVER['PHP_SELF'] . "?success=template_saved");
+            exit;
+        } else {
+            throw new Exception("Database error: Could not save the template.");
+        }
+    } catch (Exception $e) {
+        $error = "Error saving template: " . $e->getMessage();
+    }
+}
+
+// HANDLER 1.2: Create New Invoice (Single or Bulk)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createInvoice'])) {
     try {
-        $invoice_type = $_POST['invoice_type']; // 'single' or 'class'
+        $invoice_type = $_POST['invoice_type'];
         $invoice_date = $_POST['invoice_date'];
         $due_date = $_POST['due_date'];
         $notes = trim($_POST['notes']);
-        
-        // Process items
+
         $items = [];
-        foreach ($_POST['item_id'] as $key => $item_id) {
-            if (!empty($item_id) && !empty($_POST['quantity'][$key])) {
-                $items[] = [
-                    'item_id' => $item_id,
-                    'quantity' => intval($_POST['quantity'][$key]),
-                    'unit_price' => floatval($_POST['unit_price'][$key]),
-                    'description' => $_POST['description'][$key] ?? ''
-                ];
+        if (isset($_POST['item_id'])) {
+            foreach ($_POST['item_id'] as $key => $item_id) {
+                if (!empty($item_id) && !empty($_POST['quantity'][$key])) {
+                    $items[] = [
+                        'item_id' => $item_id,
+                        'description' => $_POST['description'][$key] ?? '',
+                        'quantity' => intval($_POST['quantity'][$key]),
+                        'unit_price' => floatval($_POST['unit_price'][$key])
+                    ];
+                }
             }
         }
-        
         if (empty($items)) {
-            throw new Exception("At least one item is required");
+            throw new Exception("An invoice must have at least one item.");
         }
-        
+
+        // In create_invoice.php, inside the handler for creating a single invoice
+
         if ($invoice_type === 'single') {
-            // Single student invoice
             $student_id = intval($_POST['student_id']);
-            $invoice_id = createInvoice($pdo, $student_id, $invoice_date, $due_date, $items, $notes);
+            if (empty($student_id)) {
+                throw new Exception("A student must be selected for a single invoice.");
+            }
+            
+            // The createInvoice function already returns the new ID, which is perfect.
+            $invoice_id = createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, $items, $notes);
+
+            // --- AUDIT TRAIL: Log the creation ---
+            $invoice_data = [
+                'id' => $invoice_id,
+                'school_id' => $school_id,
+                'student_id' => $student_id,
+                'invoice_date' => $invoice_date,
+                'due_date' => $due_date,
+                'items' => $items, // Log the items included
+                'notes' => $notes
+            ];
+            log_audit($pdo, 'CREATE', 'invoices', $invoice_id, ['data' => $invoice_data]);
+            // ---
+            
             header("Location: view_invoice.php?id=" . $invoice_id);
-            ob_end_flush();
             exit;
         } elseif ($invoice_type === 'class') {
-            // Bulk invoicing for class
             $class_id = intval($_POST['class_id']);
-            $students = getStudentsByClass($pdo, $class_id);
-            
-            if (empty($students)) {
-                throw new Exception("No students found in this class");
+            if (empty($class_id)) {
+                throw new Exception("A class must be selected for bulk invoicing.");
             }
-            
-            $created_invoices = [];
-            foreach ($students as $student) {
-                $invoice_id = createInvoice($pdo, $student['id'], $invoice_date, $due_date, $items, $notes);
-                $created_invoices[] = $invoice_id;
+            $students_in_class = getStudentsByClass($pdo, $class_id, $school_id);
+            if (empty($students_in_class)) {
+                throw new Exception("No students found in the selected class.");
             }
-            
-            $_SESSION['success'] = "Created ".count($created_invoices)." invoices for the class";
-            header("Location: create_invoice.php");
-            ob_end_flush();
+
+            $created_count = 0;
+            foreach ($students_in_class as $student) {
+                createInvoice($pdo, $school_id, $student['id'], $invoice_date, $due_date, $items, $notes);
+                $created_count++;
+            }
+            $_SESSION['success'] = "Successfully created " . $created_count . " invoices for the class.";
+            header("Location: customer_center.php?tab=invoices");
             exit;
         }
     } catch (Exception $e) {
-        $error = $e->getMessage();
+        $error = "Error creating invoice: " . $e->getMessage();
     }
 }
 
-// Get classes for dropdown
-$classes = [];
-$stmt = $pdo->query("SELECT id, name FROM classes");
-if ($stmt) {
-    $classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
 
-// Process new item creation
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createItem'])) {
-    try {
-        $name = trim($_POST['item_name']);
-        $price = floatval($_POST['item_price']);
-        $description = trim($_POST['item_description']);
-        $parent_id = !empty($_POST['parent_id']) ? intval($_POST['parent_id']) : null;
-        $item_type = $parent_id ? 'child' : 'parent';
-        
-        $item_id = createItem($pdo, $name, $price, $description, $parent_id, $item_type);
-        
-        // Refresh the items list
-        $items = getItemsWithSubItems($pdo);
-        
-        // Return the new item's data as JSON
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => true,
-            'item' => [
-                'id' => $item_id,
-                'name' => $name,
-                'price' => $price,
-                'description' => $description,
-                'parent_id' => $parent_id,
-                'item_type' => $item_type
-            ]
-        ]);
-        // Flush the output buffer and end it
-        ob_end_flush();
-        exit;
-    } catch (Exception $e) {
-        header('Content-Type: application/json');
-        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
-        // Flush the output buffer and end it
-        ob_end_flush();
-        exit;
-    }
-}
+// =================================================================
+// SECTION 2: DATA RETRIEVAL FOR FORM
+// =================================================================
+$students = getStudents($pdo, $school_id);
+$items_list = getItemsWithSubItems($pdo, $school_id);
+$classes = getClasses($pdo, $school_id);
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['saveTemplate'])) {
-    $templateName = trim($_POST['template_name']);
-    $items = json_encode($_POST['template_items']); // We'll store items as JSON
-    
-    $stmt = $pdo->prepare("INSERT INTO invoice_templates (name, items) VALUES (?, ?)");
-    if ($stmt->execute([$templateName, $items])) {
-        $success = "Template saved successfully!";
-    } else {
-        $error = "Error saving template.";
-    }
-}
+$stmt = $pdo->prepare("SELECT id, name FROM invoice_templates WHERE school_id = ? ORDER BY name ASC");
+$stmt->execute([$school_id]);
+$templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get existing templates
-$templates = [];
-$stmt = $pdo->query("SELECT * FROM invoice_templates");
-if ($stmt) {
-    $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// Get students and items for dropdowns
-$students = getStudents($pdo);
-$items = getItemsWithSubItems($pdo);
 ?>
+<style>
+    :root {
+        --primary-color: #2c7be5;
+        --secondary-color: #f1f4f8;
+        --border-color: #d8e2ef;
+        --text-color: #50668d;
+        --text-dark: #12263f;
+        --danger-color: #e63757;
+        --white-color: #fff;
+    }
+
+    .invoice-creation-page {
+        background-color: var(--white-color);
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        padding: 2rem;
+        max-width: 1200px;
+        margin: 2rem auto;
+    }
+
+    .invoice-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--border-color); padding-bottom: 1.5rem; margin-bottom: 1.5rem; }
+    .invoice-header .logo-container { font-size: 1.5rem; font-weight: bold; color: var(--text-dark); }
+    .invoice-header h1 { margin: 0; font-size: 2rem; text-align: right; }
+    .invoice-details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin-bottom: 2rem; }
+    .form-group label { display: block; font-weight: 600; color: var(--text-dark); margin-bottom: 0.5rem; }
+    .form-group input[type="text"], .form-group input[type="date"], .form-group input[type="number"], .form-group select, .form-group textarea { width: 100%; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: 0.375rem; background-color: var(--white-color); box-sizing: border-box; transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--primary-color); box-shadow: 0 0 0 0.2rem rgba(44, 123, 229, 0.25); outline: none; }
+    
+    .items-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    .items-table thead { background-color: var(--secondary-color); }
+    .items-table th { padding: 0.75rem; text-align: left; font-weight: 600; color: var(--text-dark); border-bottom: 2px solid var(--border-color); }
+    .items-table td { padding: 0.5rem; vertical-align: top; }
+    .items-table tbody tr { border-bottom: 1px solid var(--border-color); }
+    .items-table td input, .items-table td select { width: 100%; padding: 0.5rem; border: 1px solid transparent; border-radius: 0.25rem; background-color: transparent; }
+    .items-table td input:focus, .items-table td select:focus { border: 1px solid var(--primary-color); background-color: var(--white-color); }
+    .items-table .amount-cell { font-weight: 600; text-align: right; padding: 1rem 0.75rem 0 0; }
+    .items-table .remove-item { background: none; border: none; color: var(--danger-color); cursor: pointer; font-size: 1.25rem; opacity: 0.5; transition: opacity 0.2s; }
+    .items-table tr:hover .remove-item { opacity: 1; }
+    
+    .invoice-footer { display: flex; justify-content: space-between; margin-top: 2rem; gap: 2rem; }
+    .notes-section { flex: 2; }
+    .totals-section { flex: 1; max-width: 350px; }
+    .totals-summary { background-color: var(--secondary-color); padding: 1.5rem; border-radius: 0.5rem; }
+    .total-line { display: flex; justify-content: space-between; margin-bottom: 1rem; }
+    .total-line.grand-total { font-size: 1.25rem; font-weight: bold; color: var(--text-dark); border-top: 2px solid var(--border-color); padding-top: 1rem; }
+    
+    .actions-bar { display: flex; justify-content: flex-end; align-items: center; padding: 1.5rem 0; margin-top: 1.5rem; border-top: 1px solid var(--border-color); gap: 1rem; }
+    .template-controls { display: flex; gap: 0.5rem; }
+    .btn-add-item { margin-top: 1rem; }
+</style>
+
+<template id="item-row-template">
+    <tr>
+        <td>
+            <select name="item_id[]" class="item-select" required>
+                <option value="">Select Item...</option>
+                <option value="new" class="create-new-item-option">+ Add new</option>
+                <?php foreach ($items_list as $item): ?>
+                    <?php if (empty($item['sub_items'])): ?>
+                        <option value="<?php echo $item['id']; ?>" data-price="<?php echo $item['price']; ?>">
+                            <?php echo htmlspecialchars($item['name']); ?>
+                        </option>
+                    <?php else: ?>
+                        <optgroup label="<?php echo htmlspecialchars($item['name']); ?>">
+                            <?php foreach ($item['sub_items'] as $sub_item): ?>
+                                <option value="<?php echo $sub_item['id']; ?>" data-price="<?php echo $sub_item['price']; ?>">
+                                    <?php
+                                        $parentName = $item['name'];
+                                        $subItemUniqueName = trim(str_replace($parentName, '', $sub_item['name']));
+                                        echo htmlspecialchars($parentName . " (" . $subItemUniqueName . ")");
+                                    ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+            </select>
+        </td>
+        <td><input type="text" name="description[]" class="description" placeholder="Item description"></td>
+        <td><input type="number" name="quantity[]" class="quantity" min="1" value="1" required></td>
+        <td><input type="number" name="unit_price[]" class="unit-price" step="0.01" required></td>
+        <td class="amount-cell">$0.00</td>
+        <td><button type="button" class="remove-item" onclick="removeItem(this)">×</button></td>
+    </tr>
+</template>
 
 <div class="container">
+<form method="post" id="invoice-form" class="invoice-creation-page">
+    <input type="hidden" name="createInvoice" value="1">
 
-<div class="form-group">
-    <label>Invoice Type:</label>
-    <div>
-        <input type="radio" id="invoice_type_single" name="invoice_type" value="single" checked>
-        <label for="invoice_type_single">Single Student</label>
-        
-        <input type="radio" id="invoice_type_class" name="invoice_type" value="class">
-        <label for="invoice_type_class">Entire Class</label>
-    </div>
-</div>
+    <header class="invoice-header">
+        <div class="logo-container"><?php echo htmlspecialchars($current_school_name); ?></div>
+        <h1>New Invoice</h1>
+    </header>
 
-<!-- Student Selection (shown by default) -->
-<div id="single-student-section">
-    <div class="form-group">
-        <label for="student_id">Student</label>
-        <select name="student_id" id="student_id" required>
-            <option value="">Select Student</option>
-            <?php foreach ($students as $student): ?>
-                <option value="<?php echo $student['id']; ?>">
-                    <?php echo htmlspecialchars($student['name']); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-    </div>
-</div>
+    <?php if (isset($error)): ?><div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div><?php endif; ?>
+    <?php if (isset($success) || isset($_GET['success'])): ?><div class="alert alert-success"><?php echo htmlspecialchars($success ?? 'Template saved successfully!'); ?></div><?php endif; ?>
 
-<!-- Class Selection (hidden by default) -->
-<div id="class-section" style="display: none;">
-    <div class="form-group">
-        <label for="class_id">Class</label>
-        <select name="class_id" id="class_id">
-            <option value="">Select Class</option>
-            <?php foreach ($classes as $class): ?>
-                <option value="<?php echo $class['id']; ?>">
-                    <?php echo htmlspecialchars($class['name']); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-    </div>
-</div>
-
-    <div class="template-controls">
-    <div class="form-group">
-        <label for="template_select">Template:</label>
-        <select id="template_select" onchange="loadTemplate(this.value)">
-            <option value="">-- Select Template --</option>
-            <?php foreach ($templates as $template): ?>
-                <option value="<?= $template['id'] ?>"><?= htmlspecialchars($template['name']) ?></option>
-            <?php endforeach; ?>
-        </select>
-    </div>
-    <button type="button" class="btn-secondary" onclick="openSaveTemplateModal()">Save as Template</button>
-</div>
-
-    <h2>Create New Invoice</h2>
-    
-    <?php if (isset($error)): ?>
-        <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
-    <?php endif; ?>
-    
-    <form method="post" class="invoice-form">
-        <div class="form-section">
-            <h3>Invoice Details</h3>
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="student_id">Student</label>
-                    <select name="student_id" id="student_id" required>
-                        <option value="">Select Student</option>
-                        <?php foreach ($students as $student): ?>
-                            <option value="<?php echo $student['id']; ?>">
-                                <?php echo htmlspecialchars($student['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="invoice_date">Invoice Date</label>
-                    <input type="date" name="invoice_date" id="invoice_date" value="<?php echo date('Y-m-d'); ?>" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="due_date">Due Date</label>
-                    <input type="date" name="due_date" id="due_date" required>
-                </div>
-            </div>
+    <div class="invoice-details-grid">
+        <div class="form-group">
+            <label for="student_id">Bill To</label>
+            <select name="student_id" id="student_id">
+                <option value="">Select Student...</option>
+                <?php foreach ($students as $student): ?>
+                    <option value="<?php echo $student['id']; ?>" <?php echo (isset($_GET['student_id']) && $_GET['student_id'] == $student['id']) ? 'selected' : ''; ?>>
+                        <?php echo htmlspecialchars($student['name']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
         </div>
-        
-        <div class="form-section">
-            <h3>Items</h3>
-            <div id="items-container">
-                <div class="item-row">
-                    <div class="form-group">
-                        <label>Item</label>
-                        <select name="item_id[]" class="item-select" required>
-                            <option value="">Select Item</option>
-                            <option value="new" class="create-new-item">+ Create New Item</option>
-                            <?php foreach ($items as $item): ?>
-                                <?php if (empty($item['sub_items'])): ?>
-                                    <option value="<?php echo $item['id']; ?>" data-price="<?php echo $item['price']; ?>">
-                                        <?php echo htmlspecialchars($item['name'] . ' ($' . number_format($item['price'], 2) . ')'); ?>
-                                    </option>
-                                <?php else: ?>
-                                    <optgroup label="<?php echo htmlspecialchars($item['name']); ?>">
-                                        <?php foreach ($item['sub_items'] as $sub_item): ?>
-                                            <option value="<?php echo $sub_item['id']; ?>" data-price="<?php echo $sub_item['price']; ?>">
-                                                <?php echo htmlspecialchars($item['name'] . ' - ' . $sub_item['name'] . ' ($' . number_format($sub_item['price'], 2) . ')'); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </optgroup>
-                                <?php endif; ?>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Quantity</label>
-                        <input type="number" name="quantity[]" class="quantity" min="1" value="1" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Unit Price</label>
-                        <input type="number" name="unit_price[]" class="unit-price" step="0.01" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Description</label>
-                        <input type="text" name="description[]" class="description">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Amount</label>
-                        <input type="text" class="amount" readonly>
-                    </div>
-                    
-                    <div class="form-group">
-                        <button type="button" class="remove-item" onclick="removeItem(this)">×</button>
-                    </div>
-                </div>
-            </div>
-            
-            <button type="button" class="add-item-btn" onclick="addItem()">Add Item</button>
-        </div>
-        
-        <div class="form-section">
-            <h3>Notes</h3>
+        <div>
             <div class="form-group">
-                <textarea name="notes" rows="3"></textarea>
+                <label>Invoice For</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="invoice_type" value="single" checked> Single Student</label>
+                    <label><input type="radio" name="invoice_type" value="class"> Entire Class</label>
+                </div>
+            </div>
+            <div id="class-section" class="form-group" style="display: none;">
+                <label for="class_id" class="sr-only">Class</label>
+                <select name="class_id" id="class_id">
+                    <option value="">Select Class...</option>
+                    <?php foreach ($classes as $class): ?><option value="<?php echo $class['id']; ?>"><?php echo htmlspecialchars($class['name']); ?></option><?php endforeach; ?>
+                </select>
             </div>
         </div>
-        
-        <div class="form-section">
-            <div class="total-section">
-                <h3>Total Amount: $<span id="total-amount">0.00</span></h3>
+        <div>
+            <div class="form-group">
+                <label for="invoice_date">Invoice Date</label>
+                <input type="date" name="invoice_date" id="invoice_date" value="<?php echo date('Y-m-d'); ?>" required>
+            </div>
+            <div class="form-group">
+                <label for="due_date">Due Date</label>
+                <input type="date" name="due_date" id="due_date" required>
             </div>
         </div>
-        
-        <div class="form-actions">
-            <button type="submit" name="createInvoice" class="btn-primary">Create Invoice</button>
-            <a href="customer_center.php" class="btn-secondary">Cancel</a>
+    </div>
+
+    <table class="items-table">
+        <thead><tr><th style="width: 30%;">Item</th><th style="width: 30%;">Description</th><th style="width: 10%;">Qty</th><th style="width: 15%;">Rate</th><th style="width: 15%; text-align: right;">Amount</th><th></th></tr></thead>
+        <tbody id="items-container"></tbody>
+    </table>
+
+    <button type="button" class="btn-secondary btn-add-item" onclick="addItem()">+ Add line</button>
+
+    <footer class="invoice-footer">
+        <div class="notes-section">
+            <div class="form-group"><label for="notes">Notes</label><textarea id="notes" name="notes" rows="4" placeholder="Enter notes or payment instructions..."></textarea></div>
+            <div class="form-group"><label for="template_select">Templates</label><div class="template-controls"><select id="template_select"><option value="">Load from template...</option><?php foreach ($templates as $template): ?><option value="<?= $template['id'] ?>"><?= htmlspecialchars($template['name']) ?></option><?php endforeach; ?></select><button type="button" class="btn-secondary" onclick="openSaveTemplateModal()">Save as Template</button></div></div>
         </div>
-    </form>
+        <div class="totals-section">
+            <div class="totals-summary"><div class="total-line"><span>Subtotal</span><span id="subtotal-amount">$0.00</span></div><div class="total-line grand-total"><span>Total</span><span id="total-amount">$0.00</span></div></div>
+        </div>
+    </footer>
+
+    <div class="actions-bar">
+        <a href="customer_center.php" class="btn-secondary">Cancel</a>
+        <button type="submit" class="btn-primary">Create Invoice</button>
+    </div>
+</form>
 </div>
 
-<!-- New Item Modal -->
+<div id="saveTemplateModal" class="modal" style="display: none;"><div class="modal-content"><div class="modal-header"><h3>Save Invoice as Template</h3><span class="close" onclick="closeModal('saveTemplateModal')">&times;</span></div><form id="saveTemplateForm" method="post"><input type="hidden" name="saveTemplate" value="1"><div class="modal-body"><p>Save the current set of items as a reusable template.</p><div class="form-group"><label for="template_name">Template Name</label><input type="text" name="template_name" id="template_name" required placeholder="e.g., Monthly Tuition Fees" class="form-control"></div><input type="hidden" name="template_items" id="template_items"></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('saveTemplateModal')">Cancel</button><button type="submit" class="btn-primary">Save Template</button></div></form></div></div>
+
 <div id="newItemModal" class="modal" style="display: none;">
     <div class="modal-content">
-        <span class="close" onclick="closeNewItemModal()">&times;</span>
-        <h3>Create New Item</h3>
-        <form id="newItemForm" onsubmit="return createNewItem(event)">
-            <div class="form-group">
-                <label for="item_type">Item Type</label>
-                <select name="item_type" id="item_type" onchange="toggleParentItem()">
-                    <option value="parent">Parent Item</option>
-                    <option value="child">Sub-Item</option>
-                </select>
+        <div class="modal-header"><h3>Create New Item/Service</h3><span class="close" onclick="closeNewItemModal()">&times;</span></div>
+        <form id="newItemForm" onsubmit="event.preventDefault(); createNewItem();">
+            <div class="modal-body">
+                <div class="form-group"><label for="new_item_name">Item Name</label><input type="text" id="new_item_name" class="form-control" required></div>
+                <div class="form-group"><label for="new_item_price">Price</label><input type="number" id="new_item_price" class="form-control" step="0.01" required></div>
+                <div class="form-group"><label for="new_item_description">Description</label><textarea id="new_item_description" class="form-control" rows="3"></textarea></div>
+                <div class="form-group"><label for="new_parent_id">Parent Item (for sub-items)</label><select id="new_parent_id" class="form-control"><option value="">None (This is a main item)</option><?php foreach ($items_list as $item): if(empty($item['parent_id'])): ?><option value="<?php echo $item['id']; ?>"><?php echo htmlspecialchars($item['name']); ?></option><?php endif; endforeach; ?></select></div>
             </div>
-            
-            <div class="form-group" id="parentItemGroup" style="display: none;">
-                <label for="parent_id">Parent Item</label>
-                <select name="parent_id" id="parent_id">
-                    <option value="">Select Parent Item</option>
-                    <?php foreach ($items as $item): ?>
-                        <option value="<?php echo $item['id']; ?>"><?php echo htmlspecialchars($item['name']); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label for="item_name">Item Name</label>
-                <input type="text" name="item_name" id="item_name" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="item_price">Price</label>
-                <input type="number" name="item_price" id="item_price" step="0.01" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="item_description">Description</label>
-                <textarea name="item_description" id="item_description" rows="3"></textarea>
-            </div>
-            
-            <div class="form-actions">
-                <button type="submit" class="btn-primary">Create Item</button>
-                <button type="button" class="btn-secondary" onclick="closeNewItemModal()">Cancel</button>
-            </div>
+            <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeNewItemModal()">Cancel</button><button type="submit" class="btn-primary">Create Item</button></div>
         </form>
     </div>
 </div>
 
-<style>
-.invoice-form {
-    background: #fff;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.form-section {
-    margin-bottom: 20px;
-    padding: 15px;
-    border: 1px solid #eee;
-    border-radius: 4px;
-}
-
-.form-row {
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-}
-
-.form-group {
-    flex: 1;
-    min-width: 200px;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: bold;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-}
-
-.item-row {
-    display: flex;
-    gap: 10px;
-    align-items: flex-end;
-    margin-bottom: 10px;
-    padding: 10px;
-    background: #f9f9f9;
-    border-radius: 4px;
-}
-
-.item-row .form-group {
-    flex: 1;
-    min-width: 150px;
-}
-
-.add-item-btn {
-    background: #4CAF50;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    margin-top: 10px;
-}
-
-.remove-item {
-    background: #f44336;
-    color: white;
-    border: none;
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
-}
-
-.total-section {
-    text-align: right;
-    padding: 15px;
-    background: #f5f5f5;
-    border-radius: 4px;
-}
-
-.form-actions {
-    display: flex;
-    gap: 10px;
-    justify-content: flex-end;
-    margin-top: 20px;
-}
-
-.btn-primary {
-    background: #2196F3;
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-.btn-secondary {
-    background: #f5f5f5;
-    color: #333;
-    border: 1px solid #ddd;
-    padding: 10px 20px;
-    border-radius: 4px;
-    text-decoration: none;
-    text-align: center;
-}
-
-.modal {
-    display: none;
-    position: fixed;
-    z-index: 1000;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0,0,0,0.4);
-}
-
-.modal-content {
-    background-color: #fefefe;
-    margin: 15% auto;
-    padding: 20px;
-    border: 1px solid #888;
-    width: 80%;
-    max-width: 500px;
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-}
-
-.close {
-    color: #aaa;
-    float: right;
-    font-size: 28px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.close:hover {
-    color: black;
-}
-
-.create-new-item {
-    font-weight: bold;
-    color: #2196F3;
-}
-
-optgroup {
-    font-weight: bold;
-    color: #333;
-}
-
-optgroup option {
-    font-weight: normal;
-    padding-left: 20px;
-}
-</style>
-
 <script>
-function addItem() {
-    const container = document.getElementById('items-container');
-    const newRow = container.firstElementChild.cloneNode(true);
-    
-    // Clear values
-    newRow.querySelector('.item-select').value = '';
-    newRow.querySelector('.quantity').value = '1';
-    newRow.querySelector('.unit-price').value = '';
-    newRow.querySelector('.description').value = '';
-    newRow.querySelector('.amount').value = '';
-    
-    container.appendChild(newRow);
-    
-    // Add event listeners to the new row
-    addItemEventListeners(newRow);
-    
-    updateTotals();
-}
+let activeItemSelect = null;
 
-function removeItem(button) {
-    const row = button.closest('.item-row');
-    const container = document.getElementById('items-container');
-    
-    // Don't remove if it's the only row
-    if (container.children.length > 1) {
-        row.remove();
-        updateTotals();
-    } else {
-        alert("You must have at least one item.");
-    }
-}
+function openModal(modalId) { document.getElementById(modalId).style.display = 'block'; }
+function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
+function addItem() { const t=document.getElementById("items-container"),e=document.getElementById("item-row-template").content.cloneNode(!0);t.appendChild(e);const n=t.lastElementChild;addItemEventListeners(n),n.querySelector(".item-select").focus() }
+function removeItem(t){t.closest("tr").remove(),updateTotals()}
+function addItemEventListeners(t){t.querySelector(".item-select").addEventListener("change",function(){handleItemSelect(this,t)}),t.querySelector(".quantity").addEventListener("input",()=>updateItemAmount(t)),t.querySelector(".unit-price").addEventListener("input",()=>updateItemAmount(t))}
+function handleItemSelect(t,e){if("new"===t.value)openNewItemModal(t);else{const n=t.options[t.selectedIndex];e.querySelector(".unit-price").value=n.dataset.price||"0.00",updateItemAmount(e)}}
+function updateItemAmount(t){const e=parseFloat(t.querySelector(".quantity").value)||0,n=parseFloat(t.querySelector(".unit-price").value)||0;t.querySelector(".amount-cell").textContent="$"+(e*n).toFixed(2),updateTotals()}
+function updateTotals(){let t=0;document.querySelectorAll("#items-container tr").forEach(e=>{const n=parseFloat(e.querySelector(".quantity").value)||0,o=parseFloat(e.querySelector(".unit-price").value)||0;t+=n*o}),document.getElementById("subtotal-amount").textContent="$"+t.toFixed(2),document.getElementById("total-amount").textContent="$"+t.toFixed(2)}
 
-function addItemEventListeners(row) {
-    const itemSelect = row.querySelector('.item-select');
-    const quantity = row.querySelector('.quantity');
-    const unitPrice = row.querySelector('.unit-price');
-    const amount = row.querySelector('.amount');
-    
-    // Update price when item is selected
-    itemSelect.addEventListener('change', function() {
-        if (this.value === 'new') {
-            openNewItemModal();
-            this.value = ''; // Reset the selection
-        } else {
-            const selectedOption = this.options[this.selectedIndex];
-            const price = selectedOption.dataset.price;
-            unitPrice.value = price;
-            updateItemAmount(row);
+function openSaveTemplateModal() {
+    const items = [];
+    document.querySelectorAll('#items-container tr').forEach(row => {
+        const itemSelect = row.querySelector('.item-select');
+        if (itemSelect.value && itemSelect.value !== 'new') {
+            items.push({ item_id: itemSelect.value, description: row.querySelector('.description').value, quantity: row.querySelector('.quantity').value, unit_price: row.querySelector('.unit-price').value });
         }
     });
-    
-    // Update amount when quantity or price changes
-    quantity.addEventListener('input', () => updateItemAmount(row));
-    unitPrice.addEventListener('input', () => updateItemAmount(row));
+    if (items.length === 0) { alert("Please add at least one item to save as a template."); return; }
+    document.getElementById('template_items').value = JSON.stringify(items);
+    openModal('saveTemplateModal');
 }
 
-function updateItemAmount(row) {
-    const quantity = parseFloat(row.querySelector('.quantity').value) || 0;
-    const unitPrice = parseFloat(row.querySelector('.unit-price').value) || 0;
-    const amount = quantity * unitPrice;
-    row.querySelector('.amount').value = amount.toFixed(2);
-    updateTotals();
-}
+document.getElementById('template_select').addEventListener('change', function() {
+    const templateId = this.value;
+    if (!templateId) return;
+    fetch(`get_template.php?id=${templateId}`).then(res => res.json()).then(data => {
+        if (data.success && data.items) {
+            const container = document.getElementById('items-container');
+            container.innerHTML = '';
+            data.items.forEach(item => {
+                addItem();
+                const newRow = container.lastElementChild;
+                newRow.querySelector('.item-select').value = item.item_id;
+                newRow.querySelector('.description').value = item.description || '';
+                newRow.querySelector('.quantity').value = item.quantity;
+                newRow.querySelector('.unit-price').value = item.unit_price;
+                updateItemAmount(newRow);
+            });
+            this.value = '';
+        } else { alert('Error loading template: ' + (data.error || 'Unknown error')); }
+    }).catch(error => console.error('Error fetching template:', error));
+});
 
-function updateTotals() {
-    let total = 0;
-    document.querySelectorAll('.item-row').forEach(row => {
-        const amount = parseFloat(row.querySelector('.amount').value) || 0;
-        total += amount;
-    });
-    document.getElementById('total-amount').textContent = total.toFixed(2);
-}
-
-function openNewItemModal() {
-    document.getElementById('newItemModal').style.display = 'block';
+function openNewItemModal(selectElement) {
+    activeItemSelect = selectElement;
+    openModal('newItemModal');
+    document.getElementById('new_item_name').focus();
 }
 
 function closeNewItemModal() {
-    document.getElementById('newItemModal').style.display = 'none';
+    if (activeItemSelect) { activeItemSelect.value = ''; }
+    document.getElementById('newItemForm').reset();
+    closeModal('newItemModal');
+    activeItemSelect = null;
 }
 
-function toggleParentItem() {
-    const itemType = document.getElementById('item_type').value;
-    const parentItemGroup = document.getElementById('parentItemGroup');
-    const parentId = document.getElementById('parent_id');
+function createNewItem() {
+    const formData = new FormData();
+    const parentId = document.getElementById('new_parent_id').value;
+    formData.append('name', document.getElementById('new_item_name').value);
+    formData.append('price', document.getElementById('new_item_price').value);
+    formData.append('description', document.getElementById('new_item_description').value);
+    formData.append('parent_id', parentId);
     
-    if (itemType === 'child') {
-        parentItemGroup.style.display = 'block';
-        parentId.required = true;
-    } else {
-        parentItemGroup.style.display = 'none';
-        parentId.required = false;
-        parentId.value = '';
-    }
-}
-function openSaveTemplateModal() {
-    const items = [];
-    document.querySelectorAll('.item-row').forEach(row => {
-        const itemSelect = row.querySelector('.item-select');
-        const quantity = row.querySelector('.quantity').value;
-        const unitPrice = row.querySelector('.unit-price').value;
-        const description = row.querySelector('.description').value;
-        
-        if (itemSelect.value) {
-            items.push({
-                item_id: itemSelect.value,
-                quantity: quantity,
-                unit_price: unitPrice,
-                description: description
-            });
-        }
-    });
-    
-    if (items.length === 0) {
-        alert("Please add at least one item before saving as template");
-        return;
-    }
-    
-    document.getElementById('template_items').value = JSON.stringify(items);
-    document.getElementById('saveTemplateModal').style.display = 'block';
-}
-
-function closeSaveTemplateModal() {
-    document.getElementById('saveTemplateModal').style.display = 'none';
-}
-
-function loadTemplate(templateId) {
-    if (!templateId) return;
-    
-    fetch(`get_template.php?id=${templateId}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const container = document.getElementById('items-container');
-                
-                // Keep first row as template, remove only additional rows
-                while (container.children.length > 1) {
-                    container.removeChild(container.lastChild);
-                }
-                
-                // Add each item from the template
-                data.items.forEach(item => {
-                    addItemFromTemplate(item);
-                });
-                
-                updateTotals();
-            } else {
-                alert('Error loading template: ' + data.error);
-            }
-        });
-}
-
-function addItemFromTemplate(item) {
-    const container = document.getElementById('items-container');
-    const templateRow = container.children[0]; // Use first row as template
-    const newRow = templateRow.cloneNode(true);
-    
-    // Set values
-    const itemSelect = newRow.querySelector('.item-select');
-    itemSelect.value = item.item_id;
-    
-    // Find matching option and get its price
-    const option = Array.from(itemSelect.options).find(opt => opt.value == item.item_id);
-    if (option) {
-        const price = option.dataset.price;
-        newRow.querySelector('.unit-price').value = price;
-    }
-    
-    newRow.querySelector('.quantity').value = item.quantity;
-    newRow.querySelector('.description').value = item.description || '';
-    
-    // Append and add event listeners
-    container.appendChild(newRow);
-    addItemEventListeners(newRow);
-    updateItemAmount(newRow);
-}
-
-function createNewItem(event) {
-    event.preventDefault();
-    
-    const form = event.target;
-    const formData = new FormData(form);
-    formData.append('createItem', '1');
-    
-    fetch('create_invoice.php', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
+    fetch('create_item.php', { method: 'POST', body: formData })
+    .then(res => res.json())
     .then(data => {
         if (data.success) {
-            // Add the new item to the dropdown
-            const itemSelect = document.querySelector('.item-select');
-            const newOption = document.createElement('option');
-            newOption.value = data.item.id;
-            
-            // Format the display text based on whether it's a parent or sub-item
-            let displayText = data.item.name;
-            if (data.item.parent_id) {
-                // Find the parent item name
-                const parentItem = Array.from(itemSelect.options).find(opt => 
-                    opt.value === data.item.parent_id.toString()
-                );
-                if (parentItem) {
-                    displayText = parentItem.text.split(' ($')[0] + ' - ' + displayText;
-                }
-            }
-            displayText += ' ($' + parseFloat(data.item.price).toFixed(2) + ')';
-            
-            newOption.textContent = displayText;
-            newOption.dataset.price = data.item.price;
-            
-            // If it's a sub-item, add it to the appropriate optgroup
-            if (data.item.parent_id) {
-                const optgroup = itemSelect.querySelector(`optgroup[label="${data.item.parent_name}"]`);
-                if (optgroup) {
-                    optgroup.appendChild(newOption);
-                } else {
-                    // Create new optgroup if it doesn't exist
-                    const newOptgroup = document.createElement('optgroup');
-                    newOptgroup.label = data.item.parent_name;
-                    newOptgroup.appendChild(newOption);
-                    itemSelect.appendChild(newOptgroup);
-                }
-            } else {
-                itemSelect.appendChild(newOption);
-            }
-            
-            // Select the new item
-            newOption.selected = true;
-            
-            // Update the price field
-            const priceInput = document.querySelector('.unit-price');
-            priceInput.value = data.item.price;
-            
-            // Close the modal
-            closeNewItemModal();
-            
-            // Show success message
-            alert('Item created successfully!');
+            alert('Item created successfully! Reloading to update the item list.');
+            window.location.reload();
         } else {
-            alert('Error creating item: ' + data.error);
+            alert('Error: ' + (data.message || 'An unknown error occurred.'));
         }
     })
-    .catch(error => {
-        alert('Error creating item: ' + error);
-    });
-    
-    return false;
+    .catch(error => console.error('Error:', error));
 }
 
-// Initialize event listeners for the first row
+
 document.addEventListener('DOMContentLoaded', function() {
-    // Set due date to 30 days from now
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 30);
-    document.getElementById('due_date').value = dueDate.toISOString().split('T')[0];
-    
-    // Add event listeners to the first row
-    const firstRow = document.querySelector('.item-row');
-    if (firstRow) {
-        addItemEventListeners(firstRow);
-    }
-    
-    // Initialize totals
-    updateTotals();
-    
-    // Toggle between single/class invoice sections
+    document.getElementById('due_date').valueAsDate = dueDate;
+    addItem();
     document.querySelectorAll('input[name="invoice_type"]').forEach(radio => {
         radio.addEventListener('change', function() {
-            document.getElementById('single-student-section').style.display = 
-                this.value === 'single' ? 'block' : 'none';
-            document.getElementById('class-section').style.display = 
-                this.value === 'class' ? 'block' : 'none';
+            const isSingle = (this.value === 'single');
+            document.getElementById('student_id').closest('.form-group').style.display = isSingle ? 'block' : 'none';
+            document.getElementById('class-section').style.display = isSingle ? 'none' : 'block';
+            document.getElementById('student_id').required = isSingle;
+            document.getElementById('class_id').required = !isSingle;
         });
     });
+    document.querySelector('input[name="invoice_type"]:checked').dispatchEvent(new Event('change'));
 });
 </script>
 
-<div id="saveTemplateModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <span class="close" onclick="closeSaveTemplateModal()">&times;</span>
-        <h3>Save as Template</h3>
-        <form method="post">
-            <input type="hidden" name="saveTemplate" value="1">
-            <div class="form-group">
-                <label for="template_name">Template Name</label>
-                <input type="text" name="template_name" id="template_name" required>
-            </div>
-            <input type="hidden" name="template_items" id="template_items">
-            <div class="form-actions">
-                <button type="submit" class="btn-primary">Save Template</button>
-                <button type="button" class="btn-secondary" onclick="closeSaveTemplateModal()">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<?php include 'footer.php'; ?>
 <?php
-// Flush the output buffer at the end if it hasn't been flushed yet
-if (ob_get_level() > 0) {
-    ob_end_flush();
-}
+include 'footer.php';
+if (ob_get_level() > 0) ob_end_flush();
+?>

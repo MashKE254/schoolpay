@@ -1,16 +1,47 @@
 <?php
-// Detect current page for body class
-$pageClass = '';
-if (basename($_SERVER['PHP_SELF']) == 'index.php') {
-    $pageClass = 'dashboard-page';
+// header.php - Secure Session Management & Dynamic Header
+session_start();
+require_once 'config.php'; // Use require_once to prevent re-declaration errors
+
+// --- Page & User Authentication ---
+$public_pages = ['login.php', 'register.php'];
+$is_public_page = in_array(basename($_SERVER['PHP_SELF']), $public_pages);
+
+if (!isset($_SESSION['user_id']) && !$is_public_page) {
+    header("Location: login.php");
+    exit();
 }
+
+// --- Dynamic Data Loading ---
+$user_id = $_SESSION['user_id'] ?? null;
+$school_id = $_SESSION['school_id'] ?? null;
+$user_name = $_SESSION['user_name'] ?? 'Guest';
+$current_school_name = 'School Finance System'; // Default name
+
+// If a user is logged in, fetch their school's name
+if ($school_id) {
+    try {
+        $stmt = $pdo->prepare("SELECT name FROM schools WHERE id = ?");
+        $stmt->execute([$school_id]);
+        $school = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($school && !empty($school['name'])) {
+            $current_school_name = $school['name'];
+        }
+    } catch (PDOException $e) {
+        // Log the error but don't stop the page from loading. The default name will be used.
+        error_log("Header school name fetch error: " . $e->getMessage());
+    }
+}
+
+// Detect current page for body class
+$pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' : '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>School Finance System</title>
+    <title><?php echo htmlspecialchars($current_school_name); ?> - Finance System</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -18,27 +49,21 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
       // Enhanced JavaScript for better UX
       function openTab(evt, tabName) {
           var i, tabcontent, tablinks;
-          
-          // Hide all tab content
           tabcontent = document.getElementsByClassName("tab-content");
           for (i = 0; i < tabcontent.length; i++) {
               tabcontent[i].classList.remove("active");
               tabcontent[i].style.display = "none";
           }
-          
-          // Remove active class from all tab links
           tablinks = document.getElementsByClassName("tab-link");
           for (i = 0; i < tablinks.length; i++) {
               tablinks[i].classList.remove("active");
           }
-          
-          // Show selected tab and mark button as active
           var selectedTab = document.getElementById(tabName);
           if (selectedTab) {
               selectedTab.classList.add("active");
               selectedTab.style.display = "block";
           }
-          evt.currentTarget.classList.add("active");
+          if(evt) evt.currentTarget.classList.add("active");
       }
 
       // Mobile menu toggle
@@ -46,96 +71,10 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
           const navLinks = document.querySelector('.nav-links');
           navLinks.classList.toggle('active');
       }
-
-      // Enhanced alert system
-      function showAlert(message, type = 'success') {
-          const alertContainer = document.createElement('div');
-          alertContainer.className = `alert alert-${type}`;
-          alertContainer.innerHTML = `
-              <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-triangle'}"></i>
-              <span>${message}</span>
-              <button class="alert-close" onclick="this.parentElement.remove()">
-                  <i class="fas fa-times"></i>
-              </button>
-          `;
-          
-          const container = document.querySelector('.container');
-          container.insertBefore(alertContainer, container.firstChild);
-          
-          // Auto-remove after 5 seconds
-          setTimeout(() => {
-              if (alertContainer.parentElement) {
-                  alertContainer.remove();
-              }
-          }, 5000);
-      }
-
-      // Auto-open first tab on page load
-      window.addEventListener('DOMContentLoaded', function() {
-          const firstTab = document.querySelector(".tab-link");
-          if (firstTab) {
-              firstTab.click();
-          }
-          
-          // Add loading states to buttons
-          document.querySelectorAll('.btn').forEach(btn => {
-              btn.addEventListener('click', function() {
-                  const originalText = this.innerHTML;
-                  this.innerHTML = '<span class="loading"></span> Processing...';
-                  this.disabled = true;
-                  
-                  // Re-enable after 2 seconds (adjust based on your needs)
-                  setTimeout(() => {
-                      this.innerHTML = originalText;
-                      this.disabled = false;
-                  }, 2000);
-              });
-          });
-      });
-
-      // Smooth scroll for anchor links
-      document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-          anchor.addEventListener('click', function (e) {
-              e.preventDefault();
-              const target = document.querySelector(this.getAttribute('href'));
-              if (target) {
-                  target.scrollIntoView({
-                      behavior: 'smooth',
-                      block: 'start'
-                  });
-              }
-          });
-      });
-
-      // Add ripple effect to buttons
-      function addRippleEffect(e) {
-          const button = e.currentTarget;
-          const circle = document.createElement("span");
-          const diameter = Math.max(button.clientWidth, button.clientHeight);
-          const radius = diameter / 2;
-          
-          circle.style.width = circle.style.height = `${diameter}px`;
-          circle.style.left = `${e.clientX - (button.offsetLeft + radius)}px`;
-          circle.style.top = `${e.clientY - (button.offsetTop + radius)}px`;
-          circle.classList.add("ripple");
-          
-          const ripple = button.getElementsByClassName("ripple")[0];
-          if (ripple) {
-              ripple.remove();
-          }
-          
-          button.appendChild(circle);
-      }
-
-      // Apply ripple effect to all buttons
-      document.addEventListener('DOMContentLoaded', function() {
-          document.querySelectorAll('.btn').forEach(btn => {
-              btn.addEventListener('click', addRippleEffect);
-          });
-      });
     </script>
 </head>
 <body class="<?php echo $pageClass; ?>">
+<?php if (!$is_public_page): // Only show header if not on login/register page ?>
 <header>
     <div class="header-container">
         <div class="header-top">
@@ -144,7 +83,7 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
                     <i class="fas fa-graduation-cap"></i>
                 </div>
                 <div class="brand-text">
-                    <h1>Bloomsfield Kindergarten and School</h1>
+                    <h1><?php echo htmlspecialchars($current_school_name); ?></h1>
                     <div class="subtitle">School Finance Management System</div>
                 </div>
             </div>
@@ -154,10 +93,10 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
                     <span class="notification-badge">3</span>
                 </div>
                 <div class="user-info">
-                    <div class="user-avatar">AD</div>
+                    <div class="user-avatar"><?php echo strtoupper(substr($user_name, 0, 2)); ?></div>
                     <div class="user-details">
-                        <div class="user-name">Admin User</div>
-                        <div class="user-role">Administrator</div>
+                        <div class="user-name"><?php echo htmlspecialchars($user_name); ?></div>
+                        <a href="logout.php" style="font-size: 0.8rem; color: #ecf0f1; text-decoration: none;">Logout</a>
                     </div>
                     <i class="fas fa-chevron-down user-dropdown"></i>
                 </div>
@@ -166,25 +105,26 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
         <nav>
             <div class="nav-container">
                 <div class="nav-links">
-                    <a href="index.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i>
-                        Dashboard
+                    <a href="index.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'index.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-tachometer-alt"></i> Dashboard
                     </a>
-                    <a href="customer_center.php">
-                        <i class="fas fa-users"></i>
-                        Customer Center
+                    <a href="customer_center.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'customer_center.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-users"></i> Customer Center
                     </a>
-                    <a href="expense_management.php">
-                        <i class="fas fa-receipt"></i>
-                        Expense Management
+                    <a href="expense_management.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'expense_management.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-receipt"></i> Expense Management
                     </a>
-                    <a href="payroll.php">
-                        <i class="fas fa-money-check-alt"></i>
-                        Payroll
+                    <a href="banking.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'banking.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-university"></i> Banking
                     </a>
-                    <a href="reports.php">
-                        <i class="fas fa-chart-bar"></i>
-                        Reports
+                    <a href="payroll.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'payroll.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-money-check-alt"></i> Payroll
+                    </a>
+                    <a href="reports.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-chart-bar"></i> Reports
+                    </a>
+                    <a href="profile.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-user-cog"></i> My Profile
                     </a>
                 </div>
                 <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
@@ -194,4 +134,5 @@ if (basename($_SERVER['PHP_SELF']) == 'index.php') {
         </nav>
     </div>
 </header>
+<?php endif; ?>
 <div class="container">
