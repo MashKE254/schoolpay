@@ -15,11 +15,12 @@
     --card-bg: #ffffff;
     --border: #dfe6e9;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-    --header-gradient-start: #1a2a6c;
-    --header-gradient-mid: #b21f1f;
-    --header-gradient-end: #2575fc;
+    /* --- UPDATED: Professional Header Gradient --- */
+    --header-gradient-start: #2c3e50;
+    --header-gradient-mid: #34495e;
+    --header-gradient-end: #2c3e50;
     --white: #ffffff;
-    --light-accent: rgba(255, 255, 255, 0.15);
+    --light-accent: rgba(255, 255, 255, 0.1);
     --border-radius: 12px;
     --transition: all 0.3s ease;
 }
@@ -56,7 +57,7 @@ h1 {
 
 /* ===== HEADER ===== */
 header {
-    background: linear-gradient(135deg, var(--header-gradient-start) 0%, var(--header-gradient-mid) 50%, var(--header-gradient-end) 100%);
+    background: linear-gradient(135deg, var(--header-gradient-start) 0%, var(--header-gradient-mid) 100%);
     color: var(--white);
     position: relative;
     overflow: hidden;
@@ -67,8 +68,13 @@ header {
 .header-container { max-width: 1400px; margin: 0 auto; padding: 0 2rem; }
 .header-top { display: flex; justify-content: space-between; align-items: center; padding: 1.5rem 0; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
 .header-brand { display: flex; align-items: center; gap: 1.2rem; }
-.brand-icon { width: 54px; height: 54px; background: rgba(255, 255, 255, 0.15); border-radius: var(--border-radius); display: flex; align-items: center; justify-content: center; font-size: 1.8rem; }
-.brand-text h1 { font-size: 1.75rem; font-weight: 700; margin: 0; }
+.brand-icon { width: 54px; height: 54px; background: var(--light-accent); border-radius: var(--border-radius); display: flex; align-items: center; justify-content: center; font-size: 1.8rem; }
+.brand-text h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin: 0;
+    color: var(--white); /* FIX: Ensures header title is always white */
+}
 .brand-text .subtitle { font-size: 0.9rem; opacity: 0.85; font-weight: 400; margin-top: 4px; }
 .header-actions { display: flex; align-items: center; gap: 1.5rem; }
 .notification-btn { width: 44px; height: 44px; border-radius: 50%; background: var(--light-accent); border: 1px solid rgba(255, 255, 255, 0.2); display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; font-size: 1.2rem; }
@@ -121,6 +127,58 @@ nav { padding: 1rem 0; }
 .summary-card.income .card-value { color: var(--success); }
 .summary-card.expense .card-icon { background: rgba(243, 156, 18, 0.1); color: var(--warning); }
 .summary-card.expense .card-value { color: var(--warning); }
+
+/*====CUSTOMER CENTER SPLIT SCREEN====*/
+.student-view-container {
+    display: flex;
+    min-height: 600px;
+    border: 1px solid var(--border); /* Add a border around the container */
+    overflow: hidden; /* Prevent overflow issues */
+    position: relative; /* Needed for absolute positioning of the resizer */
+}
+
+.student-list-panel {
+    /* Make sure the initial width is set, but it will be changed by JS */
+    width: 40%; 
+    min-width: 350px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    /* Remove the old border and padding that might conflict */
+    border-right: none; 
+    padding-right: 0;
+}
+
+.student-detail-panel {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding-left: 10px; /* Adjust padding */
+    min-width: 400px;
+}
+
+#resizer {
+    width: 10px; /* The clickable area of the resizer */
+    background-color: #f1f5f9; /* A light, neutral color */
+    cursor: col-resize; /* The cursor to indicate it's resizable */
+    position: relative;
+    transition: background-color 0.2s ease;
+}
+
+#resizer:hover {
+    background-color: #e2e8f0; /* A slightly darker color on hover */
+}
+
+/* Optional: add a visual line in the middle of the resizer */
+#resizer::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 2px;
+    height: 40px;
+    background-color: #cbd5e1;
+    border-radius: 2px;
+}
 
 /* ===== GENERAL CARD & TAB LAYOUT ===== */
 .card {
@@ -255,6 +313,44 @@ button:active, .btn:active, a.btn:active {
     border-color: #c0392b;
 }
 
+.kpi-container {
+    display: grid;
+    /* This creates a responsive grid that adjusts the number of columns based on screen width */
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px; /* Space between the KPI boxes */
+    margin-bottom: 30px; /* Space below the KPI section */
+}
+
+.kpi-box {
+    background-color: var(--card-bg);
+    padding: 25px;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    text-align: center;
+    transition: var(--transition);
+}
+
+.kpi-box:hover {
+    transform: translateY(-5px); /* Adds a subtle lift effect on hover */
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+}
+
+.kpi-box h2 {
+    margin-top: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--dark);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+}
+
+.kpi-box p {
+    font-size: 2.2rem;
+    font-weight: 700;
+    color: var(--primary);
+    margin: 0;
+}
 
 /* ===== FORMS ===== */
 .form-group { margin-bottom: 20px; }

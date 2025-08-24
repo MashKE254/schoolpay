@@ -1,1128 +1,516 @@
 <?php
-// index.php - Main Dashboard for School Finance Management System
+// index.php - Revamped Dashboard with Dynamic KPIs & Chart
+
 require 'config.php';
 require 'functions.php';
-include 'header.php'; // This now handles session and sets $school_id
+include 'header.php'; // Handles session and sets $school_id
 
-// --- Data Fetching ---
-$summary = getDashboardSummary($pdo, $school_id);
+// --- Define the date range based on user selection ---
+$period = $_GET['period'] ?? '6m'; // Default to Last 6 Months
+$end_date_obj = new DateTime();
+$period_label = 'Last 6 Months';
+
+// Set default custom dates to today
+$custom_start = $_GET['start_date_custom'] ?? date('Y-m-d');
+$custom_end = $_GET['end_date_custom'] ?? date('Y-m-d');
+
+switch ($period) {
+    case '30d':
+        $start_date_obj = (new DateTime())->sub(new DateInterval('P30D'));
+        $period_label = 'Last 30 Days';
+        break;
+    case '90d':
+        $start_date_obj = (new DateTime())->sub(new DateInterval('P90D'));
+        $period_label = 'Last 90 Days';
+        break;
+    case '1y':
+        $start_date_obj = (new DateTime())->sub(new DateInterval('P1Y'));
+        $period_label = 'Last Year';
+        break;
+    case 'ytd':
+        $start_date_obj = new DateTime(date('Y-01-01'));
+        $period_label = 'This Year (YTD)';
+        break;
+    case 'custom': // NEW: Handle the custom date range
+        $start_date_obj = new DateTime($custom_start);
+        $end_date_obj = new DateTime($custom_end);
+        $period_label = $start_date_obj->format('M j, Y') . ' - ' . $end_date_obj->format('M j, Y');
+        break;
+    case '6m':
+    default:
+        $start_date_obj = (new DateTime())->sub(new DateInterval('P6M'));
+        $period_label = 'Last 6 Months';
+        break;
+}
+$start_date = $start_date_obj->format('Y-m-d');
+$end_date = $end_date_obj->format('Y-m-d');
+
+// --- Call the function with the dynamic date range for KPIs ---
+// This relies on the updated getDashboardSummary function in functions.php
+$summary = getDashboardSummary($pdo, $school_id, $start_date, $end_date);
 $totalStudents = $summary['total_students'];
 $totalIncome = $summary['total_income'];
 $totalExpenses = $summary['total_expenses'];
 $currentBalance = $summary['current_balance'];
 
-// Get recent transactions (combining recent payments and expenses)
+// --- Data Fetching for Widgets ---
+
+// Recent Transactions
 $recentTransactions = [];
-$stmt = $pdo->prepare("
+$stmt_payments = $pdo->prepare("
     SELECT p.id, p.payment_date as date, p.amount, 'Payment' as type, s.name as related_name, i.id as reference_number
-    FROM payments p
-    JOIN invoices i ON p.invoice_id = i.id
-    JOIN students s ON i.student_id = s.id
+    FROM payments p JOIN invoices i ON p.invoice_id = i.id JOIN students s ON i.student_id = s.id
     WHERE p.school_id = ? ORDER BY p.payment_date DESC LIMIT 5
 ");
-$stmt->execute([$school_id]);
-$recentTransactions = array_merge($recentTransactions, $stmt->fetchAll(PDO::FETCH_ASSOC));
+$stmt_payments->execute([$school_id]);
+$recentTransactions = array_merge($recentTransactions, $stmt_payments->fetchAll(PDO::FETCH_ASSOC));
 
-$stmt = $pdo->prepare("
+$stmt_expenses_recent = $pdo->prepare("
     SELECT e.id, e.transaction_date as date, e.amount, 'Expense' as type, e.type as related_name, e.reference_number
-    FROM expenses e
-    WHERE e.school_id = ? ORDER BY e.transaction_date DESC LIMIT 5
+    FROM expenses e WHERE e.school_id = ? AND e.transaction_type = 'debit' ORDER BY e.transaction_date DESC LIMIT 5
 ");
-$stmt->execute([$school_id]);
-$recentTransactions = array_merge($recentTransactions, $stmt->fetchAll(PDO::FETCH_ASSOC));
+$stmt_expenses_recent->execute([$school_id]);
+$recentTransactions = array_merge($recentTransactions, $stmt_expenses_recent->fetchAll(PDO::FETCH_ASSOC));
 
 usort($recentTransactions, fn($a, $b) => strtotime($b['date']) - strtotime($a['date']));
 $recentTransactions = array_slice($recentTransactions, 0, 5);
 
-
-// Get overdue invoices
+// Overdue Invoices
 $overdueInvoices = getOpenInvoicesReport($pdo, $school_id);
 
-
-// Get monthly income/expense for chart (last 6 months)
-$monthKeys = [];
-$monthLabels = [];
-for ($i = 5; $i >= 0; $i--) {
-    $date = new DateTime("first day of -$i month");
-    $monthKeys[] = $date->format('Y-m');
-    $monthLabels[] = $date->format('M');
+// --- DYNAMIC CHART LOGIC ---
+// Determine grouping format based on the selected period length
+$days_diff = $end_date_obj->diff($start_date_obj)->days;
+if ($days_diff <= 90) { // Group by day for periods up to 90 days
+    $sql_group_format = '%Y-%m-%d';
+    $php_label_format = 'M j';
+    $php_key_format = 'Y-m-d';
+    $interval = new DateInterval('P1D');
+} else { // Group by month for longer periods
+    $sql_group_format = '%Y-%m';
+    $php_label_format = 'M Y';
+    $php_key_format = 'Y-m';
+    $interval = new DateInterval('P1M');
 }
 
-$chartIncomeData = array_fill(0, 6, 0);
-$chartExpenseData = array_fill(0, 6, 0);
+// Generate all labels and keys for the period
+$chartLabels = [];
+$chartKeys = [];
+$periodIterator = new DatePeriod($start_date_obj, $interval, $end_date_obj->add(new DateInterval('P1D'))); // Add 1 day to include the end date
 
-$stmt = $pdo->prepare("
-    SELECT DATE_FORMAT(payment_date, '%Y-%m') as month, SUM(amount) as monthly_income
-    FROM payments
-    WHERE payment_date >= ? AND school_id = ?
-    GROUP BY month ORDER BY month ASC
-");
-$stmt->execute([date('Y-m-01', strtotime('-5 months')), $school_id]);
-$monthlyIncome = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-foreach ($monthlyIncome as $income) {
-    $index = array_search($income['month'], $monthKeys);
-    if ($index !== false) $chartIncomeData[$index] = (float)$income['monthly_income'];
+foreach ($periodIterator as $date) {
+    $chartLabels[] = $date->format($php_label_format);
+    $chartKeys[] = $date->format($php_key_format);
 }
 
-$stmt = $pdo->prepare("
-    SELECT DATE_FORMAT(transaction_date, '%Y-%m') as month, SUM(amount) as monthly_expense
-    FROM expenses
-    WHERE transaction_date >= ? AND school_id = ?
-    GROUP BY month ORDER BY month ASC
-");
-$stmt->execute([date('Y-m-01', strtotime('-5 months')), $school_id]);
-$monthlyExpenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Initialize data arrays with keys
+$chartIncomeData = array_fill_keys($chartKeys, 0);
+$chartExpenseData = array_fill_keys($chartKeys, 0);
 
-foreach ($monthlyExpenses as $expense) {
-    $index = array_search($expense['month'], $monthKeys);
-    if ($index !== false) $chartExpenseData[$index] = (float)$expense['monthly_expense'];
+// Fetch and map income data
+$stmt_chart_income = $pdo->prepare("
+    SELECT DATE_FORMAT(payment_date, '{$sql_group_format}') as period, SUM(amount) as total
+    FROM payments WHERE school_id = :school_id AND payment_date BETWEEN :start_date AND :end_date
+    GROUP BY period ORDER BY period ASC
+");
+$stmt_chart_income->execute([':school_id' => $school_id, ':start_date' => $start_date, ':end_date' => $end_date]);
+$incomeResults = $stmt_chart_income->fetchAll(PDO::FETCH_ASSOC);
+foreach ($incomeResults as $row) {
+    if (isset($chartIncomeData[$row['period']])) {
+        $chartIncomeData[$row['period']] = (float)$row['total'];
+    }
 }
 
-
-// Get top students by amount paid
-$stmt = $pdo->prepare("
-    SELECT s.id, s.name, SUM(p.amount) as total_paid
-    FROM students s
-    JOIN payments p ON s.id = p.student_id
-    WHERE s.school_id = ?
-    GROUP BY s.id, s.name
-    ORDER BY total_paid DESC LIMIT 5
+// Fetch and map expense data
+$stmt_chart_expense = $pdo->prepare("
+    SELECT DATE_FORMAT(e.transaction_date, '{$sql_group_format}') as period, SUM(e.amount) as total
+    FROM expenses e JOIN accounts a ON e.account_id = a.id
+    WHERE e.school_id = :school_id AND e.transaction_date BETWEEN :start_date AND :end_date
+      AND a.account_type = 'expense' AND e.transaction_type = 'debit'
+    GROUP BY period ORDER BY period ASC
 ");
-$stmt->execute([$school_id]);
-$topStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$stmt_chart_expense->execute([':school_id' => $school_id, ':start_date' => $start_date, ':end_date' => $end_date]);
+$expenseResults = $stmt_chart_expense->fetchAll(PDO::FETCH_ASSOC);
+foreach ($expenseResults as $row) {
+    if (isset($chartExpenseData[$row['period']])) {
+        $chartExpenseData[$row['period']] = (float)$row['total'];
+    }
+}
 
+// Final data arrays for Chart.js
+$finalIncomeData = array_values($chartIncomeData);
+$finalExpenseData = array_values($chartExpenseData);
+
+// Expense Breakdown chart data
+$expense_cat_stmt = $pdo->prepare("
+    SELECT a.account_name, SUM(e.amount) as total
+    FROM expenses e JOIN accounts a ON e.account_id = a.id
+    WHERE e.school_id = ? AND a.account_type = 'expense' AND e.transaction_type = 'debit' AND e.transaction_date >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+    GROUP BY a.id ORDER BY total DESC LIMIT 5
+");
+$expense_cat_stmt->execute([$school_id]);
+$topExpenses = $expense_cat_stmt->fetchAll(PDO::FETCH_ASSOC);
+$expenseCatLabels = array_column($topExpenses, 'account_name');
+$expenseCatData = array_column($topExpenses, 'total');
+
+// Budget summary
+$budgetSummary = null;
+$budget_stmt = $pdo->prepare("SELECT id, name, start_date, end_date FROM budgets WHERE school_id = ? AND status = 'active' AND NOW() BETWEEN start_date AND end_date LIMIT 1");
+$budget_stmt->execute([$school_id]);
+$active_budget = $budget_stmt->fetch(PDO::FETCH_ASSOC);
+if ($active_budget) {
+    $budget_data = getBudgetVsActualsData($pdo, $active_budget['id'], $active_budget['start_date'], $active_budget['end_date'], $school_id);
+    if ($budget_data) {
+        $budgetSummary = [
+            'name' => $active_budget['name'],
+            'total_budgeted' => $budget_data['expense']['totals']['budgeted'],
+            'total_actual' => $budget_data['expense']['totals']['actual'],
+            'percentage_used' => ($budget_data['expense']['totals']['budgeted'] > 0) ? round(($budget_data['expense']['totals']['actual'] / $budget_data['expense']['totals']['budgeted']) * 100) : 0
+        ];
+    }
+}
 ?>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>School Finance Dashboard</title>
-    
-    <!-- Import necessary fonts and icons -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <style>
-        /* === New Design Styles to Match reports.php === */
-        :root {
-            --primary: #2c3e50;
-            --secondary: #3498db;
-            --accent: #1abc9c;
-            --light: #ecf0f1;
-            --dark: #34495e;
-            --success: #2ecc71;
-            --warning: #f39c12;
-            --danger: #e74c3c;
-            --card-bg: #ffffff;
-            --border: #dfe6e9;
-            --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background: linear-gradient(135deg, #f5f7fa 0%, #e4e7eb 100%);
-            color: #333;
-            min-height: 100vh;
-            font-family: 'Inter', sans-serif;
-            padding: 20px;
-        }
-
-        .dashboard-container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        .dashboard-header {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 20px 30px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: var(--shadow);
-            border-left: 5px solid var(--secondary);
-        }
-
-        .dashboard-title h1 {
-            font-size: 28px;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 8px;
-        }
-
-        .dashboard-title h1 i {
-            color: var(--secondary);
-            font-size: 32px;
-        }
-
-        .dashboard-title p {
-            color: var(--dark);
-            font-size: 16px;
-            margin-left: 47px;
-        }
-
-        .dashboard-actions {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-        }
-
-        .refresh-btn {
-            background: var(--light);
-            border: none;
-            padding: 12px 20px;
-            border-radius: 10px;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            color: var(--primary);
-            transition: all 0.3s ease;
-        }
-
-        .refresh-btn:hover {
-            background: var(--secondary);
-            color: white;
-        }
-
-        .refresh-btn i {
-            transition: transform 0.3s ease;
-        }
-
-        .last-updated {
-            background: rgba(52, 152, 219, 0.1);
-            padding: 10px 15px;
-            border-radius: 8px;
-            font-size: 14px;
-            color: var(--secondary);
-        }
-
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 25px;
-            margin-bottom: 30px;
-        }
-
-        .summary-card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 25px;
-            box-shadow: var(--shadow);
-            position: relative;
-            overflow: hidden;
-            transition: transform 0.3s ease;
-        }
-
-        .summary-card:hover {
-            transform: translateY(-5px);
-        }
-
-        .income-card {
-            border-top: 4px solid var(--success);
-        }
-
-        .expense-card {
-            border-top: 4px solid var(--warning);
-        }
-
-        .student-card {
-            border-top: 4px solid var(--secondary);
-        }
-
-        .balance-card {
-            border-top: 4px solid var(--accent);
-        }
-
-        .card-icon {
-            position: absolute;
-            top: 25px;
-            right: 25px;
-            width: 50px;
-            height: 50px;
-            background: rgba(16, 185, 129, 0.1);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-            color: var(--success);
-        }
-
-        .expense-card .card-icon {
-            background: rgba(243, 156, 18, 0.1);
-            color: var(--warning);
-        }
-
-        .student-card .card-icon {
-            background: rgba(52, 152, 219, 0.1);
-            color: var(--secondary);
-        }
-
-        .balance-card .card-icon {
-            background: rgba(26, 188, 156, 0.1);
-            color: var(--accent);
-        }
-
-        .card-label {
-            font-size: 16px;
-            color: var(--dark);
-            margin-bottom: 10px;
-            font-weight: 600;
-        }
-
-        .card-value {
-            font-size: 32px;
-            font-weight: 700;
-            margin-bottom: 15px;
-        }
-
-        .income-card .card-value {
-            color: var(--success);
-        }
-
-        .expense-card .card-value {
-            color: var(--warning);
-        }
-
-        .student-card .card-value {
-            color: var(--secondary);
-        }
-
-        .balance-card .card-value {
-            color: var(--accent);
-        }
-
-        .card-trend {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            padding: 8px 12px;
-            border-radius: 8px;
-            background: rgba(16, 185, 129, 0.1);
-            width: fit-content;
-        }
-
-        .positive {
-            background: rgba(16, 185, 129, 0.1);
-            color: var(--success);
-        }
-
-        .negative {
-            background: rgba(231, 76, 60, 0.1);
-            color: var(--danger);
-        }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-            gap: 25px;
-        }
-
-        .chart-container, .transactions-card, 
-        .overdue-card, .students-card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 25px;
-            box-shadow: var(--shadow);
-            height: 100%;
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .card-header h3 {
-            font-size: 20px;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .view-all-btn {
-            background: rgba(52, 152, 219, 0.1);
-            color: var(--secondary);
-            border: none;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s ease;
-        }
-
-        .view-all-btn:hover {
-            background: var(--secondary);
-            color: white;
-        }
-
-        .priority-indicator {
-            background: rgba(231, 76, 60, 0.1);
-            color: var(--danger);
-            padding: 6px 12px;
-            border-radius: 30px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .priority-indicator span {
-            background: var(--danger);
-            color: white;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-        }
-
-        .transactions-list, .overdue-list, .students-ranking {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .transaction-item, .overdue-item, .student-rank-item {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-radius: 12px;
-            background: #f8fafc;
-            transition: all 0.3s ease;
-        }
-
-        .transaction-item:hover, .overdue-item:hover, .student-rank-item:hover {
-            background: #e3f2fd;
-            transform: translateX(5px);
-        }
-
-        .transaction-icon {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 15px;
-            font-size: 18px;
-        }
-
-        .transaction-icon.payment {
-            background: rgba(46, 204, 113, 0.15);
-            color: var(--success);
-        }
-
-        .transaction-icon.expense {
-            background: rgba(231, 76, 60, 0.15);
-            color: var(--danger);
-        }
-
-        .transaction-details {
-            flex: 1;
-        }
-
-        .transaction-name {
-            font-weight: 600;
-            color: var(--primary);
-            margin-bottom: 4px;
-        }
-
-        .transaction-meta {
-            font-size: 13px;
-            color: var(--dark);
-        }
-
-        .transaction-amount {
-            font-weight: 700;
-            font-size: 18px;
-        }
-
-        .transaction-amount.payment {
-            color: var(--success);
-        }
-
-        .transaction-amount.expense {
-            color: var(--danger);
-        }
-
-        .overdue-priority {
-            margin-right: 15px;
-        }
-
-        .priority-dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-        }
-
-        .priority-dot.medium {
-            background: var(--warning);
-        }
-
-        .priority-dot.high {
-            background: var(--danger);
-        }
-
-        .priority-dot.critical {
-            background: #c0392b;
-        }
-
-        .invoice-info {
-            display: flex;
-            flex-direction: column;
-            margin-bottom: 6px;
-        }
-
-        .invoice-link {
-            font-weight: 600;
-            color: var(--secondary);
-            text-decoration: none;
-            margin-bottom: 4px;
-        }
-
-        .invoice-link:hover {
-            text-decoration: underline;
-        }
-
-        .student-name {
-            font-size: 14px;
-            color: var(--dark);
-        }
-
-        .overdue-meta {
-            font-size: 13px;
-            color: var(--dark);
-        }
-
-        .days-overdue {
-            color: var(--danger);
-            font-weight: 600;
-        }
-
-        .overdue-amount {
-            font-weight: 700;
-            color: var(--danger);
-            font-size: 18px;
-        }
-
-        .rank-number {
-            width: 50px;
-            height: 50px;
-            border-radius: 12px;
-            background: rgba(52, 152, 219, 0.1);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            color: var(--secondary);
-            font-size: 20px;
-            margin-right: 15px;
-            position: relative;
-        }
-
-        .rank-medal {
-            position: absolute;
-            top: -8px;
-            right: -8px;
-            font-size: 24px;
-        }
-
-        .rank-1 {
-            color: #ffd700; /* Gold */
-        }
-
-        .rank-2 {
-            color: #c0c0c0; /* Silver */
-        }
-
-        .rank-3 {
-            color: #cd7f32; /* Bronze */
-        }
-
-        .student-info {
-            flex: 1;
-        }
-
-        .student-link {
-            font-weight: 600;
-            color: var(--primary);
-            text-decoration: none;
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        .student-link:hover {
-            color: var(--secondary);
-        }
-
-        .payment-progress {
-            width: 100%;
-        }
-
-        .progress-bar {
-            height: 8px;
-            background: #e0e7ff;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: var(--secondary);
-            border-radius: 4px;
-            transition: width 1s ease;
-        }
-
-        .student-amount {
-            font-weight: 700;
-            color: var(--secondary);
-            font-size: 18px;
-        }
-
-        .card-footer {
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid var(--border);
-            display: flex;
-            justify-content: flex-end;
-        }
-
-        /* Empty States */
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--dark);
-        }
-
-        .empty-state i {
-            font-size: 48px;
-            color: #cbd5e1;
-            margin-bottom: 20px;
-        }
-
-        .empty-state p {
-            font-size: 18px;
-            margin-bottom: 10px;
-        }
-
-        .empty-state small {
-            font-size: 14px;
-            color: #94a3b8;
-        }
-
-        .chart-wrapper {
-            height: 300px;
-            margin-top: 20px;
-        }
-
-        /* Responsive Adjustments */
-        @media (max-width: 1200px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .dashboard-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 20px;
-            }
-            
-            .summary-cards {
-                grid-template-columns: 1fr;
-            }
-            
-            .dashboard-actions {
-                width: 100%;
-                justify-content: space-between;
-            }
-        }
-
-        /* Animation for progress bars */
-        @keyframes progressFill {
-            from { width: 0; }
-            to { width: var(--progress-width); }
-        }
-    </style>
-</head>
-<body>
-    <div class="dashboard-container">
-        <!-- Dashboard Header -->
-        <div class="dashboard-header">
-            <div class="dashboard-title">
-                <h1><i class="fas fa-chart-line"></i> Finance Dashboard</h1>
-                <p>Real-time overview of your school's financial performance</p>
+<div class="dashboard-container">
+    <!-- Period Selector Form -->
+    <div class="dashboard-controls">
+        <form method="GET" id="period-selector-form">
+            <div class="form-group">
+                <label for="period-select">Show Stats For:</label>
+                <select name="period" id="period-select">
+                    <option value="30d" <?php echo ($period === '30d') ? 'selected' : ''; ?>>Last 30 Days</option>
+                    <option value="90d" <?php echo ($period === '90d') ? 'selected' : ''; ?>>Last 90 Days</option>
+                    <option value="6m" <?php echo ($period === '6m') ? 'selected' : ''; ?>>Last 6 Months</option>
+                    <option value="ytd" <?php echo ($period === 'ytd') ? 'selected' : ''; ?>>This Year (YTD)</option>
+                    <option value="1y" <?php echo ($period === '1y') ? 'selected' : ''; ?>>Last Year</option>
+                    <option value="custom" <?php echo ($period === 'custom') ? 'selected' : ''; ?>>Custom Range...</option>
+                </select>
             </div>
-            <div class="dashboard-actions">
-                <button class="refresh-btn" onclick="refreshDashboardData()">
-                    <i class="fas fa-sync-alt"></i> Refresh
-                </button>
-                <div class="last-updated">
-                    Last updated: <?php echo date('M d, Y h:i A'); ?>
+            <!-- NEW: Custom Date Inputs -->
+            <div class="custom-date-range" id="custom-date-fields" style="display: <?php echo ($period === 'custom') ? 'flex' : 'none'; ?>;">
+                <div class="form-group">
+                    <label for="start_date_custom">From:</label>
+                    <input type="date" name="start_date_custom" id="start_date_custom" value="<?php echo htmlspecialchars($custom_start); ?>">
                 </div>
+                <div class="form-group">
+                    <label for="end_date_custom">To:</label>
+                    <input type="date" name="end_date_custom" id="end_date_custom" value="<?php echo htmlspecialchars($custom_end); ?>">
+                </div>
+                <button type="submit" class="btn-primary btn-small">Apply</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+        <div class="summary-card income-card">
+            <div class="card-label">Total Income</div>
+            <div class="card-value">$<?php echo number_format($totalIncome, 2); ?></div>
+            <div class="card-trend positive"><i class="fas fa-calendar-alt"></i> <?php echo $period_label; ?></div>
+        </div>
+        <div class="summary-card expense-card">
+            <div class="card-label">Total Expenses</div>
+            <div class="card-value">$<?php echo number_format($totalExpenses, 2); ?></div>
+            <div class="card-trend negative"><i class="fas fa-calendar-alt"></i> <?php echo $period_label; ?></div>
+        </div>
+         <div class="summary-card student-card">
+            <div class="card-label">Active Students</div>
+            <div class="card-value"><?php echo number_format($totalStudents); ?></div>
+            <div class="card-trend"><i class="fas fa-user-check"></i> Total Enrolled</div>
+        </div>
+        <div class="summary-card balance-card">
+            <div class="card-label">Net Balance</div>
+            <div class="card-value">$<?php echo number_format($currentBalance, 2); ?></div>
+            <div class="card-trend <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>">
+                <i class="fas fa-<?php echo ($currentBalance >= 0) ? 'smile' : 'frown'; ?>"></i>
+                For <?php echo $period_label; ?>
             </div>
         </div>
-
-        <!-- Summary Cards -->
-        <div class="summary-cards">
-            <!-- Income Card -->
-            <div class="summary-card income-card">
-                <div class="card-icon">
-                    <i class="fas fa-arrow-trend-up"></i>
-                </div>
-                <div class="card-content">
-                    <div class="card-label">Total Income</div>
-                    <div class="card-value">$<?php echo number_format($totalIncome, 2); ?></div>
-                    <div class="card-trend">
-                        <i class="fas fa-calendar"></i> Last 6 months
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Expense Card -->
-            <div class="summary-card expense-card">
-                <div class="card-icon">
-                    <i class="fas fa-arrow-trend-down"></i>
-                </div>
-                <div class="card-content">
-                    <div class="card-label">Total Expenses</div>
-                    <div class="card-value">$<?php echo number_format($totalExpenses, 2); ?></div>
-                    <div class="card-trend">
-                        <i class="fas fa-calendar"></i> Last 6 months
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Student Card -->
-            <div class="summary-card student-card">
-                <div class="card-icon">
-                    <i class="fas fa-user-graduate"></i>
-                </div>
-                <div class="card-content">
-                    <div class="card-label">Total Students</div>
-                    <div class="card-value"><?php echo number_format($totalStudents); ?></div>
-                    <div class="card-trend">
-                        <i class="fas fa-calendar"></i> Current total
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Balance Card -->
-            <div class="summary-card balance-card">
-                <div class="card-icon">
-                    <i class="fas fa-balance-scale"></i>
-                </div>
-                <div class="card-content">
-                    <div class="card-label">Net Balance</div>
-                    <div class="card-value <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>">
-                        $<?php echo number_format(abs($currentBalance), 2); ?>
-                        <?php echo ($currentBalance < 0) ? '(Deficit)' : ''; ?>
-                    </div>
-                    <div class="card-trend <?php echo ($currentBalance >= 0) ? 'positive' : 'negative'; ?>">
-                        <i class="fas fa-<?php echo ($currentBalance >= 0) ? 'arrow-up' : 'arrow-down'; ?>"></i>
-                        <?php echo ($currentBalance >= 0) ? 'Healthy' : 'Needs Attention'; ?>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Dashboard Grid -->
-        <div class="dashboard-grid">
+    </div>
+    
+    <!-- Main Dashboard Grid -->
+    <div class="dashboard-main-grid">
+        <div class="main-content">
             <!-- Financial Chart -->
-            <div class="chart-container">
+            <div class="dashboard-card chart-container">
                 <div class="card-header">
-                    <h3><i class="fas fa-chart-area"></i> Financial Overview</h3>
-                    <div class="chart-controls">
-                        <select id="chartPeriod" class="select-input">
-                            <option value="6">Last 6 Months</option>
-                            <option value="12">Last 12 Months</option>
-                            <option value="24">Last 24 Months</option>
-                        </select>
-                    </div>
+                    <h3><i class="fas fa-chart-area"></i> Income vs. Expense (<?php echo $period_label; ?>)</h3>
                 </div>
                 <div class="chart-wrapper">
                     <canvas id="financeChart"></canvas>
                 </div>
             </div>
-            
-            <!-- Recent Transactions -->
-            <div class="transactions-card">
-                <div class="card-header">
-                    <h3><i class="fas fa-clock-rotate-left"></i> Recent Transactions</h3>
-                    <a href="#" class="view-all-btn">
-                        View All <i class="fas fa-arrow-right"></i>
-                    </a>
-                </div>
-                <div class="transactions-list">
-                    <?php if (empty($recentTransactions)): ?>
-                        <div class="empty-state">
-                            <i class="fas fa-receipt"></i>
-                            <p>No recent transactions</p>
-                        </div>
-                    <?php else: ?>
-                        <?php foreach($recentTransactions as $index => $transaction): ?>
-                            <div class="transaction-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
-                                <div class="transaction-icon <?php echo strtolower($transaction['type']); ?>">
-                                    <i class="fas fa-<?php echo ($transaction['type'] == 'Payment') ? 'arrow-down' : 'arrow-up'; ?>"></i>
-                                </div>
-                                <div class="transaction-details">
-                                    <div class="transaction-name"><?php echo htmlspecialchars($transaction['related_name']); ?></div>
-                                    <div class="transaction-meta">
-                                        <?php echo date('M d, Y', strtotime($transaction['date'])); ?>
-                                        <?php if (!empty($transaction['reference_number'])): ?>
-                                            • Ref: <?php echo htmlspecialchars($transaction['reference_number']); ?>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                                <div class="transaction-amount <?php echo strtolower($transaction['type']); ?>">
-                                    <?php echo ($transaction['type'] == 'Expense') ? '-' : '+'; ?>$<?php echo number_format($transaction['amount'], 2); ?>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
+
             <!-- Overdue Invoices -->
-            <div class="overdue-card">
+            <div class="dashboard-card overdue-card">
                 <div class="card-header">
-                    <h3><i class="fas fa-exclamation-triangle"></i> Overdue Invoices</h3>
+                    <h3><i class="fas fa-exclamation-triangle"></i> Action Required: Overdue Invoices</h3>
                     <?php if (!empty($overdueInvoices)): ?>
-                    <div class="priority-indicator high">
-                        <span><?php echo count($overdueInvoices); ?></span> Overdue
-                    </div>
+                        <div class="priority-indicator"><span><?php echo count($overdueInvoices); ?></span> Overdue</div>
                     <?php endif; ?>
                 </div>
-                <div class="overdue-list">
+                <div class="item-list">
                     <?php if (empty($overdueInvoices)): ?>
-                        <div class="empty-state success">
-                            <i class="fas fa-check-circle"></i>
-                            <p>No overdue invoices</p>
-                            <small>All payments are up to date!</small>
+                        <div class="empty-state">
+                            <i class="fas fa-check-circle"></i><p>All payments are up to date!</p>
                         </div>
                     <?php else: ?>
-                        <?php foreach($overdueInvoices as $index => $invoice): ?>
-                            <?php
-                                // --- FIX STARTS HERE ---
-                                // Calculate the number of days the invoice is overdue.
-                                $days_overdue = 0;
-                                if (!empty($invoice['due_date'])) {
-                                    $dueDate = new DateTime($invoice['due_date']);
-                                    $now = new DateTime();
-                                    // Ensure we only calculate for dates in the past.
-                                    if ($dueDate < $now) {
-                                        $interval = $now->diff($dueDate);
-                                        $days_overdue = $interval->days;
-                                    }
-                                }
-                                // --- FIX ENDS HERE ---
-                            ?>
-                            <div class="overdue-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
-                                <div class="overdue-priority">
-                                    <div class="priority-dot <?php echo ($days_overdue > 30) ? 'critical' : (($days_overdue > 15) ? 'high' : 'medium'); ?>"></div>
+                        <?php foreach(array_slice($overdueInvoices, 0, 4) as $invoice): ?>
+                             <?php
+    $dueDate = new DateTime($invoice['due_date']);
+    $dueDate->setTime(0, 0, 0); // Normalize due date to midnight
+
+    $now = new DateTime('today'); // 'today' also defaults to midnight
+
+    $days_overdue = 0; // Default to 0
+    if ($dueDate < $now) {
+        // Only calculate the difference if the due date is in the past
+        $days_overdue = $now->diff($dueDate)->days;
+    }
+?>
+                            <div class="list-item">
+                                <div class="item-details">
+                                    <a href="view_invoice.php?id=<?php echo $invoice['id']; ?>" class="item-title"><?php echo htmlspecialchars($invoice['student_name']); ?></a>
+                                    <span class="item-meta">Invoice #<?php echo $invoice['id']; ?> • <span class="days-overdue"><?php echo $days_overdue; ?> days late</span></span>
                                 </div>
-                                <div class="overdue-details">
-                                    <div class="invoice-info">
-                                        <a href="#" class="invoice-link">
-                                            Invoice #<?php echo $invoice['id']; ?>
-                                        </a>
-                                        <span class="student-name"><?php echo htmlspecialchars($invoice['student_name']); ?></span>
-                                    </div>
-                                    <div class="overdue-meta">
-                                        Due: <?php echo date('M d, Y', strtotime($invoice['due_date'])); ?> • 
-                                        <span class="days-overdue"><?php echo $days_overdue; ?> days late</span>
-                                    </div>
-                                </div>
-                                <div class="overdue-amount">
-                                    $<?php echo number_format($invoice['balance'], 2); ?>
+                                <div class="item-action">
+                                    <span class="item-amount-bad">$<?php echo number_format($invoice['balance'], 2); ?></span>
+                                    <button class="btn-secondary btn-small">Send Reminder</button>
                                 </div>
                             </div>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </div>
-                <?php if (!empty($overdueInvoices)): ?>
-                <div class="card-footer">
-                    <a href="#" class="view-all-btn">
-                        Manage Invoices <i class="fas fa-arrow-right"></i>
+                 <div class="card-footer">
+                    <a href="reports.php?tab=arAging" class="view-all-btn">View All Overdue <i class="fas fa-arrow-right"></i></a>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar-content">
+             <!-- Quick Actions -->
+            <div class="dashboard-card quick-actions-card">
+                <div class="card-header"><h3><i class="fas fa-bolt"></i> Quick Actions</h3></div>
+                <div class="quick-actions-grid">
+                    <a href="create_invoice.php" class="action-item">
+                        <i class="fas fa-plus"></i><span>New Invoice</span>
+                    </a>
+                    <a href="customer_center.php?tab=receive_payment" class="action-item">
+                        <i class="fas fa-hand-holding-usd"></i><span>Receive Payment</span>
+                    </a>
+                    <a href="expense_management.php?tab=journal" class="action-item">
+                        <i class="fas fa-edit"></i><span>Record Expense</span>
+                    </a>
+                    <a href="payroll.php" class="action-item">
+                        <i class="fas fa-money-check-alt"></i><span>Run Payroll</span>
                     </a>
                 </div>
-                <?php endif; ?>
             </div>
             
-            <!-- Top Students -->
-            <div class="students-card">
+            <!-- Budget Overview -->
+            <?php if ($budgetSummary): ?>
+            <div class="dashboard-card budget-card">
                 <div class="card-header">
-                    <h3><i class="fas fa-trophy"></i> Top Contributing Students</h3>
-                    <div class="period-toggle">
-                        <button class="toggle-btn active" data-period="month">Month</button>
-                        <button class="toggle-btn" data-period="year">Year</button>
+                    <h3><i class="fas fa-bullseye"></i> Budget Overview</h3>
+                    <a href="budget.php" class="view-all-btn"><i class="fas fa-eye"></i></a>
+                </div>
+                <div class="budget-details">
+                    <span class="budget-name"><?php echo htmlspecialchars($budgetSummary['name']); ?></span>
+                    <div class="budget-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: <?php echo $budgetSummary['percentage_used']; ?>%;"></div>
+                        </div>
+                        <span class="progress-label"><?php echo $budgetSummary['percentage_used']; ?>% of Expense Budget Used</span>
+                    </div>
+                    <div class="budget-numbers">
+                        <span>$<?php echo number_format($budgetSummary['total_actual'], 0); ?></span>
+                        <span>$<?php echo number_format($budgetSummary['total_budgeted'], 0); ?></span>
                     </div>
                 </div>
-                <div class="students-ranking">
-                    <?php if (empty($topStudents)): ?>
-                        <div class="empty-state">
-                            <i class="fas fa-users"></i>
-                            <p>No payment data available</p>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Expense Breakdown -->
+            <div class="dashboard-card expense-breakdown-card">
+                 <div class="card-header">
+                    <h3><i class="fas fa-chart-pie"></i> Expense Breakdown (Last 90 Days)</h3>
+                </div>
+                <div class="donut-chart-wrapper">
+                    <?php if (empty($topExpenses)): ?>
+                         <div class="empty-state">
+                            <i class="fas fa-receipt"></i><p>No expense data for this period.</p>
                         </div>
                     <?php else: ?>
-                        <?php foreach($topStudents as $index => $student): ?>
-                            <div class="student-rank-item" style="animation-delay: <?php echo ($index * 0.1); ?>s">
-                                <div class="rank-number">
-                                    <span class="rank">#<?php echo $index + 1; ?></span>
-                                    <?php if ($index < 3): ?>
-                                        <i class="fas fa-medal rank-medal rank-<?php echo $index + 1; ?>"></i>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="student-info">
-                                    <a href="#" class="student-link">
-                                        <?php echo htmlspecialchars($student['name']); ?>
-                                    </a>
-                                    <div class="payment-progress">
-                                        <div class="progress-bar">
-                                            <div class="progress-fill" style="width: <?php echo min(100, ($student['total_paid'] / max($topStudents[0]['total_paid'], 1)) * 100); ?>%"></div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="student-amount">
-                                    $<?php echo number_format($student['total_paid'], 2); ?>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
+                        <canvas id="expenseDonutChart"></canvas>
                     <?php endif; ?>
-                </div>
-                <div class="card-footer">
-                    <a href="#" class="view-all-btn">
-                        View All Students <i class="fas fa-arrow-right"></i>
-                    </a>
                 </div>
             </div>
         </div>
     </div>
+</div>
 
-    <!-- Pass chart data to JavaScript -->
-    <script>
-        window.chartData = {
-            labels: <?= json_encode($monthLabels) ?>,
-            income: <?= json_encode($chartIncomeData) ?>,
-            expenses: <?= json_encode($chartExpenseData) ?>
-        };
-    </script>
+<style>
+/* Add styles for the new period selector */
+.dashboard-controls {
+    background: var(--card-bg);
+    padding: 15px 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+#period-selector-form {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+#period-selector-form .form-group, .custom-date-range {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+#period-selector-form label {
+    font-weight: 600;
+    color: var(--primary);
+    margin-bottom: 0;
+}
+#period-select, input[type="date"] {
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-weight: 500;
+}
+:root {
+    --primary: #2c3e50; --secondary: #3498db; --success: #2ecc71;
+    --warning: #f39c12; --danger: #e74c3c; --light: #ecf0f1;
+    --card-bg: #ffffff; --border: #dfe6e9;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+body { background-color: #f4f7f9; }
+.dashboard-container { max-width: 1600px; margin: auto; padding: 20px; }
+.summary-cards {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px;
+}
+.summary-card {
+    background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: var(--shadow);
+    border-left: 5px solid var(--secondary);
+}
+.summary-card.income-card { border-color: var(--success); }
+.summary-card.expense-card { border-color: var(--danger); }
+.summary-card.balance-card { border-color: var(--primary); }
+.card-label { font-size: 1rem; color: #7f8c8d; margin-bottom: 8px; }
+.card-value { font-size: 2rem; font-weight: 700; color: var(--primary); }
+.card-trend { font-size: 0.8rem; margin-top: 10px; display: flex; align-items: center; gap: 5px;}
+.card-trend.positive { color: var(--success); }
+.card-trend.negative { color: var(--danger); }
+.dashboard-main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+.main-content, .sidebar-content { display: flex; flex-direction: column; gap: 20px; }
+.dashboard-card { background: var(--card-bg); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 15px; }
+.card-header h3 { font-size: 1.1rem; color: var(--primary); display: flex; align-items: center; gap: 10px; }
+.view-all-btn { font-size: 0.8rem; text-decoration: none; color: var(--secondary); font-weight: 600; }
+.chart-wrapper { height: 300px; }
+.donut-chart-wrapper { height: 220px; display: flex; align-items: center; justify-content: center; }
+.quick-actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.action-item { background: #f8f9fa; border-radius: 8px; padding: 15px; text-align: center; color: var(--primary); text-decoration: none; font-weight: 600; transition: all 0.2s ease; }
+.action-item:hover { background: var(--secondary); color: white; transform: translateY(-3px); }
+.action-item i { display: block; font-size: 1.5rem; margin-bottom: 8px; }
+.item-list { display: flex; flex-direction: column; gap: 10px; }
+.list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-radius: 8px; }
+.list-item:hover { background: #f8f9fa; }
+.item-details .item-title { font-weight: 600; color: var(--primary); text-decoration: none; }
+.item-details .item-meta { font-size: 0.8rem; color: #7f8c8d; }
+.days-overdue { color: var(--danger); font-weight: bold; }
+.item-action { display: flex; align-items: center; gap: 10px; }
+.item-amount-bad { font-weight: 700; color: var(--danger); }
+.btn-small { padding: 5px 10px; font-size: 0.75rem; }
+.budget-card .budget-name { font-weight: 600; color: var(--primary); }
+.budget-card .progress-bar { background: var(--light); border-radius: 5px; height: 10px; margin: 10px 0 5px; }
+.budget-card .progress-fill { background: var(--success); height: 100%; border-radius: 5px; }
+.budget-card .progress-label { font-size: 0.8rem; color: #7f8c8d; }
+.budget-card .budget-numbers { display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; color: #7f8c8d; }
+.empty-state { text-align: center; padding: 30px; }
+.empty-state i { font-size: 2.5rem; color: #bdc3c7; margin-bottom: 10px; }
+.empty-state p { font-weight: 600; color: #7f8c8d; }
+@media (max-width: 1200px) { .dashboard-main-grid { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .summary-cards { grid-template-columns: 1fr; } }
+</style>
 
-    <!-- Include Chart.js and AOS Animation Library -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // --- Pass PHP data to JS ---
+    const chartData = {
+        labels: <?= json_encode($chartLabels) ?>,
+        income: <?= json_encode($finalIncomeData) ?>,
+        expenses: <?= json_encode($finalExpenseData) ?>
+    };
+    const expenseDonutData = {
+        labels: <?= json_encode($expenseCatLabels) ?>,
+        data: <?= json_encode($expenseCatData) ?>
+    };
 
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize AOS animations
-            AOS.init({
-                duration: 800,
-                easing: 'ease-out-cubic',
-                once: true,
-                offset: 100
-            });
-            
-            // Enhanced Finance Chart
-            const ctx = document.getElementById('financeChart').getContext('2d');
-            
-            // Use actual chart data from PHP
-            const months = window.chartData.labels;
-            const incomeData = window.chartData.income;
-            const expenseData = window.chartData.expenses;
-            
-            // Create gradient backgrounds
-            const incomeGradient = ctx.createLinearGradient(0, 0, 0, 400);
-            incomeGradient.addColorStop(0, 'rgba(16, 185, 129, 0.8)');
-            incomeGradient.addColorStop(1, 'rgba(16, 185, 129, 0.1)');
-            
-            const expenseGradient = ctx.createLinearGradient(0, 0, 0, 400);
-            expenseGradient.addColorStop(0, 'rgba(239, 68, 68, 0.8)');
-            expenseGradient.addColorStop(1, 'rgba(239, 68, 68, 0.1)');
-            
-            const financeChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: months,
-                    datasets: [
-                        {
-                            label: 'Income',
-                            data: incomeData,
-                            backgroundColor: incomeGradient,
-                            borderColor: '#10b981',
-                            borderWidth: 3,
-                            fill: true,
-                            tension: 0.4,
-                            pointBackgroundColor: '#10b981',
-                            pointBorderColor: '#ffffff',
-                            pointBorderWidth: 3,
-                            pointRadius: 6,
-                            pointHoverRadius: 8
-                        },
-                        {
-                            label: 'Expenses',
-                            data: expenseData,
-                            backgroundColor: expenseGradient,
-                            borderColor: '#ef4444',
-                            borderWidth: 3,
-                            fill: true,
-                            tension: 0.4,
-                            pointBackgroundColor: '#ef4444',
-                            pointBorderColor: '#ffffff',
-                            pointBorderWidth: 3,
-                            pointRadius: 6,
-                            pointHoverRadius: 8
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {
-                        intersect: false,
-                        mode: 'index'
-                    },
-                    plugins: {
-                        legend: {
-                            position: 'top',
-                            labels: {
-                                padding: 20,
-                                font: {
-                                    size: 14,
-                                    weight: 600
-                                },
-                                usePointStyle: true,
-                                pointStyle: 'circle'
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(17, 24, 39, 0.95)',
-                            titleColor: '#ffffff',
-                            bodyColor: '#ffffff',
-                            borderColor: '#374151',
-                            borderWidth: 1,
-                            cornerRadius: 12,
-                            padding: 16,
-                            displayColors: true,
-                            callbacks: {
-                                label: function(context) {
-                                    let label = context.dataset.label || '';
-                                    if (label) {
-                                        label += ': ';
-                                    }
-                                    if (context.parsed.y !== null) {
-                                        label += '$' + context.parsed.y.toLocaleString();
-                                    }
-                                    return label;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: {
-                                color: 'rgba(148, 163, 184, 0.1)',
-                                drawBorder: false
-                            },
-                            ticks: {
-                                padding: 12,
-                                font: {
-                                    size: 12,
-                                    weight: 500
-                                },
-                                color: '#64748b',
-                                callback: function(value) {
-                                    return '$' + value.toLocaleString();
-                                }
-                            }
-                        },
-                        x: {
-                            grid: {
-                                display: false
-                            },
-                            ticks: {
-                                padding: 12,
-                                font: {
-                                    size: 12,
-                                    weight: 500
-                                },
-                                color: '#64748b'
-                            }
-                        }
-                    }
-                }
-            });
-            
-            // Period toggle functionality
-            document.querySelectorAll('.toggle-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
-                    this.classList.add('active');
-                });
-            });
-            
-            // Animate progress bars
-            setTimeout(() => {
-                document.querySelectorAll('.progress-fill').forEach(bar => {
-                    const width = bar.style.width;
-                    bar.style.width = '0%';
-                    setTimeout(() => {
-                        bar.style.width = width;
-                    }, 100);
-                });
-            }, 500);
-            
-            // Function to refresh dashboard data
-            window.refreshDashboardData = function() {
-                const refreshBtn = document.querySelector('.refresh-btn');
-                const icon = refreshBtn.querySelector('i');
-                
-                icon.style.animation = 'spin 1s linear infinite';
-                refreshBtn.disabled = true;
-                
-                setTimeout(() => {
-                    location.reload();
-                }, 1000);
-            };
-            
-            // Add animation for refresh button
-            const style = document.createElement('style');
-            style.textContent = `
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-            `;
-            document.head.appendChild(style);
+    // --- Main Financial Chart ---
+    const ctxLine = document.getElementById('financeChart').getContext('2d');
+    new Chart(ctxLine, {
+        type: 'line',
+        data: {
+            labels: chartData.labels,
+            datasets: [{
+                label: 'Income',
+                data: chartData.income,
+                borderColor: '#2ecc71',
+                backgroundColor: 'rgba(46, 204, 113, 0.1)',
+                fill: true,
+                tension: 0.4
+            }, {
+                label: 'Expenses',
+                data: chartData.expenses,
+                borderColor: '#e74c3c',
+                backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                fill: true,
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { y: { beginAtZero: true } }
+        }
+    });
+
+    // --- Expense Breakdown Donut Chart ---
+    if (expenseDonutData.data.length > 0) {
+        const ctxDonut = document.getElementById('expenseDonutChart').getContext('2d');
+        new Chart(ctxDonut, {
+            type: 'doughnut',
+            data: {
+                labels: expenseDonutData.labels,
+                datasets: [{
+                    label: 'Top Expenses',
+                    data: expenseDonutData.data,
+                    backgroundColor: ['#3498db', '#e74c3c', '#f1c40f', '#9b59b6', '#34495e'],
+                    hoverOffset: 4
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } }
+            }
         });
-    </script>
-</body>
-</html>
+    }
+
+    // --- NEW: JavaScript for Custom Date Selector ---
+    const periodSelect = document.getElementById('period-select');
+    const customDateFields = document.getElementById('custom-date-fields');
+    const form = document.getElementById('period-selector-form');
+
+    periodSelect.addEventListener('change', function() {
+        if (this.value === 'custom') {
+            customDateFields.style.display = 'flex';
+        } else {
+            customDateFields.style.display = 'none';
+            form.submit();
+        }
+    });
+});
+</script>

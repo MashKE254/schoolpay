@@ -3,12 +3,12 @@ require_once 'config.php';
 require_once 'functions.php';
 require_once 'header.php';
 
-// Fetch data for the forms
+// Fetch data for the forms (existing code)
 $asset_accounts_stmt = $pdo->prepare("SELECT id, account_name, balance FROM accounts WHERE school_id = ? AND account_type = 'asset' ORDER BY account_name");
 $asset_accounts_stmt->execute([$school_id]);
 $accounts_list = $asset_accounts_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch payments sitting in "Undeposited Funds"
+// Fetch payments sitting in "Undeposited Funds" (existing code)
 $undeposited_stmt = $pdo->prepare("
     SELECT p.id, p.payment_date, p.amount, p.payment_method, s.name as student_name
     FROM payments p
@@ -20,6 +20,48 @@ $undeposited_stmt = $pdo->prepare("
 $undeposited_stmt->execute([$school_id]);
 $undeposited_payments = $undeposited_stmt->fetchAll(PDO::FETCH_ASSOC);
 $total_undeposited_amount = array_sum(array_column($undeposited_payments, 'amount'));
+
+
+// --- NEW: Fetch data for the History Tab ---
+
+// 1. Get all completed deposits
+$deposits_history_stmt = $pdo->prepare("
+    SELECT 
+        d.deposit_date AS transaction_date,
+        d.amount,
+        d.memo,
+        'Deposit' AS type,
+        a.account_name AS detail
+    FROM deposits d
+    JOIN accounts a ON d.account_id = a.id
+    WHERE d.school_id = ?
+");
+$deposits_history_stmt->execute([$school_id]);
+$deposits_history = $deposits_history_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// 2. Get all fund transfers (only showing the debit side for a cleaner log)
+$transfers_history_stmt = $pdo->prepare("
+    SELECT 
+        e.transaction_date,
+        e.amount,
+        e.description AS memo,
+        'Transfer' AS type,
+        CONCAT('Transfer to ', a.account_name) AS detail
+    FROM expenses e
+    JOIN accounts a ON e.account_id = a.id
+    WHERE e.school_id = ? AND e.type = 'transfer' AND e.transaction_type = 'debit'
+");
+$transfers_history_stmt->execute([$school_id]);
+$transfers_history = $transfers_history_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// 3. Merge and sort the history records
+$transaction_history = array_merge($deposits_history, $transfers_history);
+
+// Sort the combined array by date in descending order
+usort($transaction_history, function($a, $b) {
+    return strtotime($b['transaction_date']) - strtotime($a['transaction_date']);
+});
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -69,7 +111,7 @@ $total_undeposited_amount = array_sum(array_column($undeposited_payments, 'amoun
     <div class="page-header">
         <div class="page-header-title">
             <h1><i class="fas fa-university"></i> Banking</h1>
-            <p>Transfer funds and group payments for bank deposits.</p>
+            <p>Transfer funds, group payments for bank deposits, and view history.</p>
         </div>
     </div>
 
@@ -77,6 +119,7 @@ $total_undeposited_amount = array_sum(array_column($undeposited_payments, 'amoun
         <div class="tabs">
             <button class="tab-link active" onclick="openTab(event, 'transfer')"><i class="fas fa-exchange-alt"></i> Transfer Funds</button>
             <button class="tab-link" onclick="openTab(event, 'deposit')"><i class="fas fa-piggy-bank"></i> Make Deposits</button>
+            <button class="tab-link" onclick="openTab(event, 'history')"><i class="fas fa-history"></i> History</button>
         </div>
 
         <div id="transfer" class="tab-content active">
@@ -173,6 +216,45 @@ $total_undeposited_amount = array_sum(array_column($undeposited_payments, 'amoun
                 <div class="form-actions"><button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Make Deposit</button></div>
             </form>
         </div>
+
+        <div id="history" class="tab-content">
+            <div class="card">
+                <h3>Transaction History</h3>
+                <p>A log of all bank deposits and internal fund transfers.</p>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Type</th>
+                                <th>Details / Memo</th>
+                                <th style="text-align:right;">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($transaction_history)): ?>
+                                <tr><td colspan="4" class="text-center">No transaction history found.</td></tr>
+                            <?php else: ?>
+                                <?php foreach ($transaction_history as $txn): ?>
+                                <tr>
+                                    <td><?= date('M d, Y', strtotime($txn['transaction_date'])) ?></td>
+                                    <td><span class="badge badge-<?= strtolower(htmlspecialchars($txn['type'])) ?>"><?= htmlspecialchars($txn['type']) ?></span></td>
+                                    <td>
+                                        <strong><?= htmlspecialchars($txn['detail']) ?></strong>
+                                        <?php if (!empty($txn['memo'])): ?>
+                                            <br><small style="color: #6c757d;"><?= htmlspecialchars($txn['memo']) ?></small>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td style="text-align:right;">$<?= number_format($txn['amount'], 2) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
 <script>
@@ -182,7 +264,11 @@ function openTab(evt, tabName) {
     document.getElementById(tabName).classList.add("active");
     evt.currentTarget.classList.add("active");
 }
-document.querySelector('.tab-link').click();
+// Ensure the first tab is active on page load
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelector('.tab-link').click();
+});
+
 
 function toggleAllCheckboxes(masterCheckbox) {
     document.querySelectorAll('.deposit-checkbox').forEach(cb => {
@@ -196,7 +282,7 @@ function updateDepositTotal() {
     document.querySelectorAll('.deposit-checkbox:checked').forEach(cb => {
         total += parseFloat(cb.closest('tr').querySelector('[data-amount]').dataset.amount);
     });
-    document.getElementById('depositTotal').textContent = '$' + total.toFixed(2);
+    document.getElementById('depositTotal').textContent = '$' + total.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 function updateRowStyle(checkbox) {

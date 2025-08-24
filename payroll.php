@@ -1,507 +1,538 @@
 <?php
-// payroll.php - Enhanced School Payroll Processing System (Multi-Tenant)
-require 'config.php';
-require 'functions.php';
-include 'header.php'; // Handles session start and sets $school_id
+/**
+ * payroll.php - Unified Employee Management and Payroll Processing System
+ * This script provides a complete hub for all employee-related tasks:
+ * - A tabbed interface for Employee List, Add/Edit Employee, Monthly Payroll, Weekly Casuals, and Payroll History.
+ * - Full CRUD (Create, Read, Update, Delete) functionality for employee records.
+ * - Automated calculation of Kenyan statutory deductions for payroll.
+ * - Separate, streamlined processing for salaried and casual employees.
+ * - Correct, balanced, double-entry integration with the accounting ledger.
+ */
+
+require_once 'config.php';
+require_once 'functions.php';
+require_once 'header.php'; // Handles session start and sets $school_id
 
 // ===================================================================================
 // --- POST REQUEST HANDLING (SERVER-SIDE LOGIC) ---
 // ===================================================================================
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action_taken = false;
-    // --- Add or Update Employee ---
-    if (isset($_POST['addEmployee']) || isset($_POST['updateEmployee'])) {
-        $action_taken = true;
-        $employee_id_post = trim($_POST['employee_id']);
-        $first_name = trim($_POST['first_name']);
-        $last_name = trim($_POST['last_name']);
-        $email = trim($_POST['email']);
-        $phone = trim($_POST['phone']);
-        $department = $_POST['department'];
-        $position = trim($_POST['position']);
-        $employment_type = $_POST['employment_type'];
-        $hire_date = $_POST['hire_date'];
-        $basic_salary = floatval($_POST['basic_salary'] ?? 0);
-        $house_allowance = floatval($_POST['house_allowance'] ?? 0);
-        $transport_allowance = floatval($_POST['transport_allowance'] ?? 0);
-        $hourly_rate = floatval($_POST['hourly_rate'] ?? 0);
-        $bank_account = trim($_POST['bank_account']);
-        $kra_pin = trim($_POST['kra_pin']);
-        $nhif_number = trim($_POST['nhif_number']);
-        $nssf_number = trim($_POST['nssf_number']);
-        $status_post = $_POST['status'];
+$error_message = '';
+$success_message = '';
 
-        if (isset($_POST['addEmployee'])) {
-            $sql = "INSERT INTO employees (school_id, employee_id, first_name, last_name, email, phone, department, position, employment_type, hire_date, basic_salary, house_allowance, transport_allowance, hourly_rate, bank_account, kra_pin, nhif_number, nssf_number, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([$school_id, $employee_id_post, $first_name, $last_name, $email, $phone, $department, $position, $employment_type, $hire_date, $basic_salary, $house_allowance, $transport_allowance, $hourly_rate, $bank_account, $kra_pin, $nhif_number, $nssf_number, $status_post]);
-        } elseif (isset($_POST['updateEmployee'])) {
-            $id = intval($_POST['emp_id']);
-            $sql = "UPDATE employees SET employee_id=?, first_name=?, last_name=?, email=?, phone=?, department=?, position=?, employment_type=?, hire_date=?, basic_salary=?, house_allowance=?, transport_allowance=?, hourly_rate=?, bank_account=?, kra_pin=?, nhif_number=?, nssf_number=?, status=? WHERE id=? AND school_id=?";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([$employee_id_post, $first_name, $last_name, $email, $phone, $department, $position, $employment_type, $hire_date, $basic_salary, $house_allowance, $transport_allowance, $hourly_rate, $bank_account, $kra_pin, $nhif_number, $nssf_number, $status_post, $id, $school_id]);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $action = $_POST['action'];
+    try {
+        $pdo->beginTransaction();
+
+        // --- ACTION: Add or Update Employee ---
+        if ($action === 'add_employee' || $action === 'update_employee') {
+            // Sanitize and validate inputs
+            $employee_id_post = trim($_POST['employee_id']);
+            $first_name = trim($_POST['first_name']);
+            $last_name = trim($_POST['last_name']);
+            $email = trim($_POST['email']);
+            $phone = trim($_POST['phone']);
+            $department = $_POST['department'];
+            $position = trim($_POST['position']);
+            $employment_type = $_POST['employment_type'];
+            $hire_date = $_POST['hire_date'];
+            $basic_salary = !empty($_POST['basic_salary']) ? floatval($_POST['basic_salary']) : 0;
+            $house_allowance = !empty($_POST['house_allowance']) ? floatval($_POST['house_allowance']) : 0;
+            $transport_allowance = !empty($_POST['transport_allowance']) ? floatval($_POST['transport_allowance']) : 0;
+            $daily_rate = !empty($_POST['daily_rate']) ? floatval($_POST['daily_rate']) : 0;
+            $kra_pin = trim($_POST['kra_pin']);
+            $nhif_number = trim($_POST['nhif_number']);
+            $nssf_number = trim($_POST['nssf_number']);
+            $status = $_POST['status'] ?? 'active';
+
+            if ($action === 'add_employee') {
+                $stmt = $pdo->prepare(
+                    "INSERT INTO employees (school_id, employee_id, first_name, last_name, email, phone, department, position, employment_type, hire_date, basic_salary, house_allowance, transport_allowance, daily_rate, kra_pin, nhif_number, nssf_number, status) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([$school_id, $employee_id_post, $first_name, $last_name, $email, $phone, $department, $position, $employment_type, $hire_date, $basic_salary, $house_allowance, $transport_allowance, $daily_rate, $kra_pin, $nhif_number, $nssf_number, $status]);
+                $success_message = "Employee added successfully!";
+            } else { // update_employee
+                $id_to_update = (int)$_POST['id'];
+                $stmt = $pdo->prepare(
+                    "UPDATE employees SET employee_id=?, first_name=?, last_name=?, email=?, phone=?, department=?, position=?, employment_type=?, hire_date=?, basic_salary=?, house_allowance=?, transport_allowance=?, daily_rate=?, kra_pin=?, nhif_number=?, nssf_number=?, status=?
+                     WHERE id = ? AND school_id = ?"
+                );
+                $stmt->execute([$employee_id_post, $first_name, $last_name, $email, $phone, $department, $position, $employment_type, $hire_date, $basic_salary, $house_allowance, $transport_allowance, $daily_rate, $kra_pin, $nhif_number, $nssf_number, $status, $id_to_update, $school_id]);
+                $success_message = "Employee updated successfully!";
+            }
         }
-    }
+        // --- ACTION: Delete Employee (Soft Delete by setting status to inactive) ---
+        elseif ($action === 'delete_employee') {
+            $id_to_delete = (int)$_POST['id'];
+            $stmt = $pdo->prepare("UPDATE employees SET status = 'inactive' WHERE id = ? AND school_id = ?");
+            $stmt->execute([$id_to_delete, $school_id]);
+            $success_message = "Employee deactivated successfully.";
+        }
+        
+        // --- ACTION: Run Monthly Payroll ---
+        elseif ($action === 'run_monthly_payroll') {
+            $pay_period = $_POST['pay_period'];
+            $pay_date = date('Y-m-t', strtotime($pay_period . '-01'));
+            $payment_account_id = (int)$_POST['payroll_payment_account_id'];
 
-    // --- Deactivate Employee ---
-    if (isset($_POST['deleteEmployee'])) {
-        $action_taken = true;
-        $id = intval($_POST['emp_id']);
-        $stmt = $pdo->prepare("UPDATE employees SET status = 'inactive' WHERE id = ? AND school_id = ?");
-        $stmt->execute([$id, $school_id]);
-    }
+            if(empty($payment_account_id)) {
+                throw new Exception("You must select a bank account to pay salaries from.");
+            }
 
-    // --- Mark Payroll as Paid ---
-    if (isset($_POST['markAsPaid'])) {
-        $action_taken = true;
-        $record_id = intval($_POST['record_id']);
-        $stmt = $pdo->prepare("UPDATE payroll SET status = 'Paid' WHERE id = ? AND school_id = ? AND status = 'Draft'");
-        $stmt->execute([$record_id, $school_id]);
-    }
+            // Get or Create necessary accounts for payroll liabilities and expenses
+            $expense_account = getOrCreateAccount($pdo, $school_id, 'Salaries & Wages', 'expense', '6010');
+            $paye_liability = getOrCreateAccount($pdo, $school_id, 'PAYE Payable', 'liability', '2100');
+            $nhif_liability = getOrCreateAccount($pdo, $school_id, 'NHIF Payable', 'liability', '2110');
+            $nssf_liability = getOrCreateAccount($pdo, $school_id, 'NSSF Payable', 'liability', '2120');
+            $levy_liability = getOrCreateAccount($pdo, $school_id, 'Housing Levy Payable', 'liability', '2130');
 
-    // --- Process a new Payroll Record ---
-    if (isset($_POST['addPayroll'])) {
-        $action_taken = true;
-        $employee_id = intval($_POST['payroll_employee_id']);
-        $employee_name = trim($_POST['employee_name']);
-        $employee_type = $_POST['employee_type'];
-        $pay_period = $_POST['pay_period'];
-        $pay_date = $_POST['pay_date'];
-        $basic_salary = floatval($_POST['basic_salary'] ?? 0);
-        $house_allowance = floatval($_POST['house_allowance'] ?? 0);
-        $transport_allowance = floatval($_POST['transport_allowance'] ?? 0);
-        $gross_pay = $basic_salary + $house_allowance + $transport_allowance;
-        $allowances_data = json_encode(['house_allowance' => $house_allowance, 'transport_allowance' => $transport_allowance]);
-        $paye = floatval($_POST['paye_calculated']);
-        $nhif = floatval($_POST['nhif_calculated']);
-        $nssf = floatval($_POST['nssf_calculated']);
-        $other_deduction = floatval($_POST['other_deduction'] ?? 0);
-        $total_deductions = $paye + $nhif + $nssf + $other_deduction;
-        $net_pay = $gross_pay - $total_deductions;
-        $deduction_data = json_encode(['paye' => ['calculated' => $paye], 'nhif' => ['calculated' => $nhif], 'nssf' => ['calculated' => $nssf], 'other' => ['calculated' => $other_deduction]]);
+            $monthly_employees_stmt = $pdo->prepare("SELECT * FROM employees WHERE school_id = ? AND status = 'active' AND employment_type = 'monthly'");
+            $monthly_employees_stmt->execute([$school_id]);
+            $monthly_employees = $monthly_employees_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $sql = "INSERT INTO payroll (school_id, employee_id, employee_name, employee_type, gross_pay, allowances, tax, insurance, retirement, other_deduction, total_deductions, net_pay, pay_date, pay_period, deduction_data, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft')";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$school_id, $employee_id, $employee_name, $employee_type, $gross_pay, $allowances_data, $paye, $nhif, $nssf, $other_deduction, $total_deductions, $net_pay, $pay_date, $pay_period, $deduction_data]);
-    }
-    
-    if ($action_taken) {
-        // Redirect to avoid form resubmission
-        header("Location: payroll.php");
+            if (empty($monthly_employees)) {
+                throw new Exception("No active monthly employees found to process payroll.");
+            }
+
+            foreach($monthly_employees as $emp) {
+                $gross_pay = (float)$emp['basic_salary'] + (float)$emp['house_allowance'] + (float)$emp['transport_allowance'];
+                if ($gross_pay <= 0) continue; // Skip employees with no salary defined
+
+                $deductions = calculate_kenyan_deductions($gross_pay);
+                
+                // 1. Create the historical payroll record
+                $stmt_payroll = $pdo->prepare("INSERT INTO payroll (school_id, employee_id, employee_name, employee_type, pay_period, pay_date, gross_pay, tax, insurance, retirement, other_deduction, total_deductions, net_pay, status) VALUES (?, ?, ?, 'monthly', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Processed')");
+                $stmt_payroll->execute([$school_id, $emp['id'], $emp['first_name'].' '.$emp['last_name'], $pay_period, $pay_date, $deductions['gross_pay'], $deductions['paye'], $deductions['nhif'], $deductions['nssf'], $deductions['housing_levy'], $deductions['total_deductions'], $deductions['net_pay']]);
+
+                // 2. Create the balanced, multi-line journal entry for the ledger
+                $description = "Monthly salary for {$emp['first_name']} {$emp['last_name']} ({$pay_period})";
+                
+                // DEBIT: The total gross pay is an expense to the company
+                create_single_expense_entry($pdo, $school_id, $pay_date, $description, $deductions['gross_pay'], $expense_account, 'debit');
+
+                // CREDIT: These are the liabilities and the cash payout
+                create_single_expense_entry($pdo, $school_id, $pay_date, "Net pay to {$emp['first_name']}", $deductions['net_pay'], $payment_account_id, 'credit');
+                create_single_expense_entry($pdo, $school_id, $pay_date, "PAYE for {$emp['first_name']}", $deductions['paye'], $paye_liability, 'credit');
+                create_single_expense_entry($pdo, $school_id, $pay_date, "NHIF for {$emp['first_name']}", $deductions['nhif'], $nhif_liability, 'credit');
+                create_single_expense_entry($pdo, $school_id, $pay_date, "NSSF for {$emp['first_name']}", $deductions['nssf'], $nssf_liability, 'credit');
+                create_single_expense_entry($pdo, $school_id, $pay_date, "Housing Levy for {$emp['first_name']}", $deductions['housing_levy'], $levy_liability, 'credit');
+            }
+            $success_message = "Monthly payroll processed successfully and general ledger updated!";
+        
+        } 
+        // --- ACTION: Run Weekly Payroll for Casuals ---
+        elseif ($action === 'run_weekly_payroll') {
+            $week_ending_date = $_POST['week_ending_date'];
+            $payment_account_id = (int)$_POST['payment_account_id'];
+            $days_worked = $_POST['days_worked'] ?? [];
+            $pay_period = date('Y-m', strtotime($week_ending_date));
+            $total_casual_payout = 0;
+
+            if (empty($payment_account_id)) {
+                throw new Exception("You must select an account to pay casuals from.");
+            }
+
+            $daily_employees_stmt = $pdo->prepare("SELECT * FROM employees WHERE school_id = ? AND status = 'active' AND employment_type = 'daily'");
+            $daily_employees_stmt->execute([$school_id]);
+            $daily_employees = $daily_employees_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach($daily_employees as $emp) {
+                if (isset($days_worked[$emp['id']]) && (int)$days_worked[$emp['id']] > 0) {
+                    $days = (int)$days_worked[$emp['id']];
+                    $rate = (float)($emp['daily_rate'] ?? 0);
+                    $gross_pay = $days * $rate;
+                    $total_casual_payout += $gross_pay;
+                    // Create payroll record for history
+                    $stmt = $pdo->prepare("INSERT INTO payroll (school_id, employee_id, employee_name, employee_type, pay_period, pay_date, gross_pay, net_pay, status, notes) VALUES (?, ?, ?, 'daily', ?, ?, ?, ?, 'Paid', ?)");
+                    $stmt->execute([$school_id, $emp['id'], $emp['first_name'].' '.$emp['last_name'], $pay_period, $week_ending_date, $gross_pay, $gross_pay, "Weekly payment for $days days @ $$rate/day."]);
+                }
+            }
+
+            if ($total_casual_payout > 0) {
+                $salary_expense_account_id = getOrCreateAccount($pdo, $school_id, 'Salaries & Wages', 'expense', '6010');
+                $description = "Weekly casual wages payment for week ending " . $week_ending_date;
+                // Create the balanced journal entry
+                create_journal_entry($pdo, $school_id, $week_ending_date, $description, $total_casual_payout, $salary_expense_account_id, $payment_account_id);
+            }
+            $success_message = "Weekly payroll processed successfully!";
+        }
+
+        $pdo->commit();
+        header("Location: payroll.php?success_msg=" . urlencode($success_message));
         exit();
+
+    } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($e->getCode() == 23000) {
+             $error_message = "Error: The Employee ID '" . htmlspecialchars($_POST['employee_id'] ?? '') . "' is already in use. Please choose a unique Employee ID.";
+        } else {
+            $error_message = "A database error occurred: " . $e->getMessage();
+        }
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error_message = "An error occurred: " . $e->getMessage();
     }
 }
 
 // ===================================================================================
-// --- DATA FETCHING for rendering the page ---
+// --- DATA FETCHING for Page Load ---
 // ===================================================================================
-try {
-    $stmt = $pdo->prepare("SELECT * FROM employees WHERE school_id = ? ORDER BY first_name, last_name");
-    $stmt->execute([$school_id]);
-    $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $stmt = $pdo->prepare("SELECT p.*, e.department, e.position FROM payroll p LEFT JOIN employees e ON p.employee_id = e.id WHERE p.school_id = ? ORDER BY p.pay_date DESC, p.created_at DESC");
-    $stmt->execute([$school_id]);
-    $payrollRecords = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $stmt = $pdo->prepare("SELECT DISTINCT department FROM employees WHERE status = 'active' AND school_id = ? ORDER BY department");
-    $stmt->execute([$school_id]);
-    $departments = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-    $stmt = $pdo->prepare("SELECT DISTINCT pay_period FROM payroll WHERE school_id = ? ORDER BY pay_period DESC");
-    $stmt->execute([$school_id]);
-    $payPeriods = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-    $activeEmployees = count(array_filter($employees, fn($e) => $e['status'] === 'active'));
-    $currentMonthPeriod = date('Y-m');
-    $monthlyTotal = array_reduce($payrollRecords, function($sum, $record) use ($currentMonthPeriod) {
-        return strpos($record['pay_period'], $currentMonthPeriod) === 0 ? $sum + $record['net_pay'] : $sum;
-    }, 0);
-
-} catch (PDOException $e) {
-    die("Database error: " . $e->getMessage());
-}
-
+$all_employees = getEmployees($pdo, $school_id);
+$daily_employees_ui = array_filter($all_employees, fn($e) => $e['employment_type'] === 'daily');
+$payroll_history = getPayrollRecords($pdo, $school_id);
+$asset_accounts = getAccountsByType($pdo, $school_id, 'asset');
 ?>
-<style>
-/* Additional styles for workflow and reporting elements from original file */
-.status-badge { padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 0.5px; }
-.status-Draft { background-color: #8da0a5; }
-.status-Paid { background-color: #2ecc71; }
-.report-section, .filter-controls { padding: 20px; background-color: #f8f9fa; border-radius: 12px; margin-bottom: 20px; border: 1px solid var(--border); }
-.filter-controls { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
-#reportOutput table { margin-top: 15px; }
-.employee-modal .modal-content { max-width: 1200px; }
-.btn-group { flex-wrap: wrap; }
-.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 20px; }
-.summary-grid .summary-card { background: var(--card-bg); padding: 20px; border-radius: var(--border-radius); box-shadow: var(--shadow); }
-.summary-card h4 { display: flex; align-items: center; gap: 10px; color: var(--primary); margin-bottom: 10px; }
-.summary-card .amount { font-size: 2rem; font-weight: 700; color: var(--secondary); }
-</style>
 
-<h1>School Payroll Management System</h1>
-
-<div class="summary-grid">
-    <div class="summary-card">
-        <h4><i class="fas fa-users"></i>Total Employees</h4>
-        <p class="amount"><?php echo count($employees); ?></p>
-    </div>
-    <div class="summary-card">
-        <h4><i class="fas fa-user-check"></i>Active Employees</h4>
-        <p class="amount"><?php echo $activeEmployees; ?></p>
-    </div>
-    <div class="summary-card">
-        <h4><i class="fas fa-wallet"></i>This Month's Payroll (Net)</h4>
-        <p class="amount">KSh <?php echo number_format($monthlyTotal, 2); ?></p>
-    </div>
-    <div class="summary-card">
-        <h4><i class="fas fa-file-invoice"></i>Total Payroll Records</h4>
-        <p class="amount"><?php echo count($payrollRecords); ?></p>
+<!-- =================================================================================== -->
+<!-- --- HTML & UI STRUCTURE --- -->
+<!-- =================================================================================== -->
+<div class="page-header">
+    <div class="page-header-title">
+        <h1><i class="fas fa-users"></i> Employees & Payroll</h1>
+        <p>Manage employee records and process all payroll runs.</p>
     </div>
 </div>
 
+<?php if (!empty($error_message)): ?>
+    <div class="alert alert-danger"><?= htmlspecialchars($error_message) ?></div>
+<?php endif; ?>
+<?php if (isset($_GET['success_msg'])): ?>
+    <div class="alert alert-success"><?= htmlspecialchars($_GET['success_msg']) ?></div>
+<?php endif; ?>
+
 <div class="tab-container">
     <div class="tabs">
-        <button class="tab-link active" onclick="openTab(event, 'recordsTab')"><i class="fas fa-history"></i> Payroll Records</button>
-        <button class="tab-link" onclick="openTab(event, 'addPayrollTab')"><i class="fas fa-cogs"></i> Process Payroll</button>
-        <button class="tab-link" onclick="openTab(event, 'reportsTab')"><i class="fas fa-chart-pie"></i> Payroll Reports</button>
-        <button class="tab-link" onclick="openModal('employeeModal')"><i class="fas fa-user-friends"></i> Manage Employees</button>
+        <button class="tab-link active" onclick="openTab(event, 'employee_list')"><i class="fas fa-list-ul"></i> Employee List</button>
+        <button class="tab-link" onclick="openTab(event, 'add_employee')"><i class="fas fa-user-plus"></i> Add/Edit Employee</button>
+        <button class="tab-link" onclick="openTab(event, 'monthly_payroll')"><i class="fas fa-calendar-alt"></i> Monthly Payroll</button>
+        <button class="tab-link" onclick="openTab(event, 'weekly_payroll')"><i class="fas fa-calendar-day"></i> Weekly Casuals</button>
+        <button class="tab-link" onclick="openTab(event, 'history')"><i class="fas fa-history"></i> Payroll History</button>
     </div>
 
-    <div id="recordsTab" class="tab-content active">
+    <!-- ======================= Employee List Tab ======================= -->
+    <div id="employee_list" class="tab-content active">
         <div class="card">
-            <h3>Payroll History & Status</h3>
+            <h2>All Employees</h2>
             <div class="table-container">
-                <table id="payrollTable">
+                <table>
                     <thead>
                         <tr>
-                            <th>Period</th><th>Employee Name</th><th>Department</th><th>Gross Pay (KSh)</th><th>Net Pay (KSh)</th><th>Status</th><th>Actions</th>
+                            <th>Name</th>
+                            <th>Employee ID</th>
+                            <th>Position</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (empty($payrollRecords)): ?>
-                            <tr><td colspan="7" class="text-center">No payroll records found.</td></tr>
-                        <?php else: ?>
-                            <?php foreach($payrollRecords as $record): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($record['pay_period']); ?></td>
-                                <td><?php echo htmlspecialchars($record['employee_name']); ?></td>
-                                <td><?php echo htmlspecialchars($record['department'] ?? 'N/A'); ?></td>
-                                <td class="amount"><?php echo number_format($record['gross_pay'], 2); ?></td>
-                                <td class="amount"><strong><?php echo number_format($record['net_pay'], 2); ?></strong></td>
-                                <td><span class="status-badge status-<?php echo str_replace(' ', '-', $record['status']); ?>"><?php echo htmlspecialchars($record['status']); ?></span></td>
-                                <td>
-                                    <div class="btn-group">
-                                        <!-- <a href="print_payslip.php?id=<?php echo $record['id']; ?>" target="_blank" class="btn btn-sm btn-secondary" data-tooltip="View Payslip"><i class="fas fa-print"></i></a> -->
-                                        <?php if ($record['status'] === 'Draft'): ?>
-                                            <form method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to mark this record as paid? This action cannot be undone.');">
-                                                <input type="hidden" name="record_id" value="<?php echo $record['id']; ?>">
-                                                <button type="submit" name="markAsPaid" class="btn btn-sm btn-success" data-tooltip="Mark as Paid"><i class="fas fa-check-double"></i> Mark Paid</button>
-                                            </form>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
+                        <?php foreach ($all_employees as $emp): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name']) ?></td>
+                            <td><?= htmlspecialchars($emp['employee_id']) ?></td>
+                            <td><?= htmlspecialchars($emp['position']) ?></td>
+                            <td><span class="badge badge-<?= strtolower($emp['employment_type']) ?>"><?= htmlspecialchars(ucfirst($emp['employment_type'])) ?></span></td>
+                            <td><span class="badge badge-<?= $emp['status'] === 'active' ? 'success' : 'secondary' ?>"><?= ucfirst($emp['status']) ?></span></td>
+                            <td>
+                                <button class="btn-icon" title="Edit" onclick='editEmployee(<?= json_encode($emp) ?>)'><i class="fas fa-edit"></i></button>
+                                <form action="payroll.php" method="POST" style="display:inline;" onsubmit="return confirm('Are you sure you want to deactivate this employee?');">
+                                    <input type="hidden" name="action" value="delete_employee">
+                                    <input type="hidden" name="id" value="<?= $emp['id'] ?>">
+                                    <button type="submit" class="btn-icon btn-danger" title="Deactivate"><i class="fas fa-user-slash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <div id="addPayrollTab" class="tab-content">
+    <!-- ======================= Add/Edit Employee Tab ======================= -->
+    <div id="add_employee" class="tab-content">
         <div class="card">
-            <h3>Process New Payroll Record</h3>
-            <form id="payrollForm" method="post" onsubmit="return validatePayrollForm()">
-                <div class="form-section">
-                    <h4>1. Select Employee & Period</h4>
-                    <div class="form-group">
-                        <label for="employeeSelect">Employee</label>
-                        <select id="employeeSelect" name="payroll_employee_select" class="form-control" onchange="loadEmployeeDataForPayroll()" required>
-                            <option value="">Choose an employee...</option>
-                            <?php foreach($employees as $emp): if($emp['status'] === 'active'): ?>
-                            <option value='<?php echo htmlspecialchars(json_encode($emp), ENT_QUOTES, 'UTF-8'); ?>'>
-                                <?php echo htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name'] . ' (' . $emp['employee_id'] . ')'); ?>
-                            </option>
-                            <?php endif; endforeach; ?>
+            <h2 id="employee-form-title">Add New Employee</h2>
+            <form id="employee-form" action="payroll.php" method="POST">
+                <input type="hidden" name="action" id="employee_action" value="add_employee">
+                <input type="hidden" name="id" id="employee_id_hidden">
+                
+                <div class="form-grid">
+                    <div class="form-group"><label>First Name*</label><input type="text" name="first_name" id="first_name" required></div>
+                    <div class="form-group"><label>Last Name*</label><input type="text" name="last_name" id="last_name" required></div>
+                    <div class="form-group"><label>Employee ID*</label><input type="text" name="employee_id" id="employee_id" required></div>
+                    <div class="form-group"><label>Email</label><input type="email" name="email" id="email"></div>
+                    <div class="form-group"><label>Phone</label><input type="tel" name="phone" id="phone"></div>
+                    <div class="form-group"><label>Hire Date*</label><input type="date" name="hire_date" id="hire_date" required></div>
+                    <div class="form-group"><label>Department</label><input type="text" name="department" id="department"></div>
+                    <div class="form-group"><label>Position*</label><input type="text" name="position" id="position" required></div>
+                    <div class="form-group"><label>Employment Type*</label>
+                        <select name="employment_type" id="employment_type" onchange="toggleSalaryFields()" required>
+                            <option value="monthly">Monthly</option>
+                            <option value="daily">Daily</option>
                         </select>
                     </div>
-                     <div class="form-group"><label for="pay_period">Pay Period</label><input type="month" name="pay_period" id="pay_period" class="form-control" value="<?php echo date('Y-m'); ?>" required></div>
-                     <div class="form-group"><label for="pay_date">Pay Date</label><input type="date" name="pay_date" id="pay_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required></div>
+                     <div class="form-group"><label>Status</label>
+                        <select name="status" id="status" required>
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                        </select>
+                    </div>
                 </div>
-                <input type="hidden" name="payroll_employee_id" id="payrollEmployeeId"><input type="hidden" name="employee_name" id="payrollEmployeeName"><input type="hidden" name="employee_type" id="payrollEmployeeType">
-                <div class="form-section">
-                    <h4>2. Earnings</h4>
-                    <div class="form-group"><label for="payrollBasicSalary">Basic Salary</label><input type="number" step="0.01" class="form-control" name="basic_salary" id="payrollBasicSalary" onkeyup="calculatePayroll()" value="0"></div>
-                    <div class="form-group"><label for="payrollHouseAllowance">House Allowance</label><input type="number" step="0.01" class="form-control" name="house_allowance" id="payrollHouseAllowance" onkeyup="calculatePayroll()" value="0"></div>
-                    <div class="form-group"><label for="payrollTransportAllowance">Transport Allowance</label><input type="number" step="0.01" class="form-control" name="transport_allowance" id="payrollTransportAllowance" onkeyup="calculatePayroll()" value="0"></div>
+
+                <div id="monthly_fields">
+                     <fieldset>
+                        <legend>Monthly Salary</legend>
+                        <div class="form-grid">
+                           <div class="form-group"><label>Basic Salary</label><input type="number" step="0.01" name="basic_salary" id="basic_salary"></div>
+                           <div class="form-group"><label>House Allowance</label><input type="number" step="0.01" name="house_allowance" id="house_allowance"></div>
+                           <div class="form-group"><label>Transport Allowance</label><input type="number" step="0.01" name="transport_allowance" id="transport_allowance"></div>
+                        </div>
+                    </fieldset>
                 </div>
-                <div class="form-section">
-                    <h4>3. Deductions</h4>
-                    <div class="form-group"><label>PAYE (Auto-calculated)</label><input type="text" id="payeCalculatedDisplay" class="form-control" readonly><input type="hidden" name="paye_calculated" id="payeCalculated"></div>
-                    <div class="form-group"><label>NHIF (Auto-calculated)</label><input type="text" id="nhifCalculatedDisplay" class="form-control" readonly><input type="hidden" name="nhif_calculated" id="nhifCalculated"></div>
-                    <div class="form-group"><label>NSSF (Auto-calculated)</label><input type="text" id="nssfCalculatedDisplay" class="form-control" readonly><input type="hidden" name="nssf_calculated" id="nssfCalculated"></div>
-                    <div class="form-group"><label>Other Deductions (e.g., salary advance)</label><input type="number" step="0.01" name="other_deduction" id="otherDeduction" class="form-control" value="0" onkeyup="calculatePayroll()"></div>
+                <div id="daily_fields" style="display:none;">
+                     <fieldset>
+                        <legend>Daily Rate</legend>
+                        <div class="form-grid">
+                           <div class="form-group"><label>Daily Rate</label><input type="number" step="0.01" name="daily_rate" id="daily_rate"></div>
+                        </div>
+                    </fieldset>
                 </div>
-                <div class="form-section">
-                    <h4>4. Summary</h4>
-                    <div class="form-group"><label>Gross Pay</label><input type="text" id="payrollGrossPay" class="form-control" readonly style="font-weight:bold;"></div>
-                    <div class="form-group"><label>Total Deductions</label><input type="text" id="payrollTotalDeductions" class="form-control" readonly style="font-weight:bold; color: var(--danger);"></div>
-                    <div class="form-group"><label>Net Pay</label><input type="text" id="payrollNetPay" class="form-control" readonly style="font-weight:bold; color: var(--success); font-size: 1.2em;"></div>
-                </div>
+                
+                <fieldset>
+                    <legend>Statutory Information</legend>
+                    <div class="form-grid">
+                        <div class="form-group"><label>KRA PIN</label><input type="text" name="kra_pin" id="kra_pin"></div>
+                        <div class="form-group"><label>NHIF Number</label><input type="text" name="nhif_number" id="nhif_number"></div>
+                        <div class="form-group"><label>NSSF Number</label><input type="text" name="nssf_number" id="nssf_number"></div>
+                    </div>
+                </fieldset>
+
                 <div class="form-actions">
-                    <button type="submit" name="addPayroll" class="btn btn-primary"><i class="fas fa-save"></i> Save as Draft</button>
-                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('payrollForm').reset(); calculatePayroll();"><i class="fas fa-undo"></i> Reset</button>
+                    <button type="submit" id="employee-form-submit" class="btn-success"><i class="fas fa-plus"></i> Add Employee</button>
+                    <button type="button" class="btn-secondary" onclick="resetEmployeeForm()">Clear Form</button>
                 </div>
             </form>
         </div>
     </div>
     
-    <div id="reportsTab" class="tab-content">
-         <div class="card">
-            <h3>Payroll Reports</h3>
-            <div class="report-section">
-                <h4>Generate Report</h4>
-                 <div class="filter-controls">
-                    <div class="form-group"><label>Report Type</label><select id="reportType" class="form-control"><option value="bank_advice">Bank Advice List</option><option value="statutory">Statutory Deductions (PAYE/NHIF/NSSF)</option></select></div>
-                    <div class="form-group"><label>For Pay Period</label><select id="reportPeriod" class="form-control"><?php foreach($payPeriods as $period): ?><option value="<?php echo htmlspecialchars($period); ?>"><?php echo htmlspecialchars($period); ?></option><?php endforeach; ?></select></div>
-                    <button class="btn btn-primary" onclick="generateReport()"><i class="fas fa-cogs"></i> Generate</button>
+    <!-- ======================= Monthly Payroll Tab ======================= -->
+    <div id="monthly_payroll" class="tab-content">
+        <div class="card">
+            <h2>Run Monthly Payroll for Salaried Staff</h2>
+            <p>This will generate payslips and create balanced journal entries for all active 'monthly' employees.</p>
+            <form action="payroll.php" method="POST" onsubmit="return confirm('Are you sure you want to run payroll for the selected month? This action will create financial records and cannot be undone.');">
+                <input type="hidden" name="action" value="run_monthly_payroll">
+                <div class="form-group">
+                    <label for="pay_period">Select Pay Month</label>
+                    <input type="month" id="pay_period" name="pay_period" class="form-control" value="<?= date('Y-m') ?>" required>
                 </div>
-            </div>
-            <div id="reportOutput" class="table-container"><p class="text-center">Select a report type and period, then click Generate.</p></div>
+                 <div class="form-group">
+                    <label for="payroll_payment_account_id">Pay From Bank Account</label>
+                    <select name="payroll_payment_account_id" id="payroll_payment_account_id" class="form-control" required>
+                        <option value="">-- Select Bank Account --</option>
+                        <?php foreach ($asset_accounts as $acc): ?>
+                            <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-success"><i class="fas fa-cogs"></i> Run Monthly Payroll</button>
+                </div>
+            </form>
         </div>
     </div>
-</div>
 
-<div id="employeeModal" class="modal employee-modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h2>Employee Management</h2>
-            <button class="close" onclick="closeModal('employeeModal')">&times;</button>
-        </div>
-        <div class="modal-body">
-            <div class="tabs">
-                <button class="tab-link active" onclick="openSubTab(event, 'employeeListTab')">Employee List</button>
-                <button class="tab-link" onclick="openSubTab(event, 'addEmployeeTab'); resetEmployeeForm();">Add New Employee</button>
-            </div>
-            
-            <div id="employeeListTab" class="tab-content active">
+    <!-- ======================= Weekly Casuals Tab ======================= -->
+    <div id="weekly_payroll" class="tab-content">
+        <div class="card">
+            <h2>Process Weekly Wages for Casuals</h2>
+            <p>This will create a single batch payment from your chosen account for all casuals listed below. The transaction will be recorded in your general ledger.</p>
+            <form action="payroll.php" method="POST" onsubmit="return confirm('Are you sure you want to process this weekly payment? This will create a financial transaction.');">
+                <input type="hidden" name="action" value="run_weekly_payroll">
+                 <div class="form-group">
+                    <label for="week_ending_date">Week Ending Date</label>
+                    <input type="date" name="week_ending_date" id="week_ending_date" class="form-control" value="<?= date('Y-m-d') ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="payment_account_id">Pay From Account (e.g., Petty Cash)</label>
+                    <select name="payment_account_id" class="form-control" required>
+                        <option value="">-- Select Payment Account --</option>
+                        <?php foreach ($asset_accounts as $acc): ?>
+                            <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?> (Balance: $<?= number_format($acc['balance'], 2) ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="table-container">
-                    <table id="employeesTable">
-                        <thead><tr><th>Name</th><th>Department</th><th>Position</th><th>Salary/Rate (KSh)</th><th>Status</th><th>Actions</th></tr></thead>
-                        <tbody>
-                            <?php foreach($employees as $employee): ?>
+                     <table>
+                        <thead>
                             <tr>
-                                <td><strong><?php echo htmlspecialchars($employee['first_name'] . ' ' . $employee['last_name']); ?></strong><br><small><?php echo htmlspecialchars($employee['employee_id']); ?></small></td>
-                                <td><?php echo htmlspecialchars($employee['department']); ?></td>
-                                <td><?php echo htmlspecialchars($employee['position']); ?></td>
-                                <td><?php echo ($employee['employment_type'] === 'monthly') ? number_format($employee['basic_salary'], 2).'/month' : number_format($employee['hourly_rate'], 2).'/'.$employee['employment_type']; ?></td>
-                                <td><span class="badge badge-<?php echo $employee['status']; ?>"><?php echo ucfirst($employee['status']); ?></span></td>
-                                <td>
-                                    <div class="btn-group">
-                                        <button onclick='editEmployee(<?php echo json_encode($employee); ?>)' class="btn btn-sm btn-edit">Edit</button>
-                                        <?php if($employee['status'] === 'active'): ?>
-                                        <form method="post" style="display: inline;" onsubmit="return confirm('Are you sure you want to deactivate this employee?');"><input type="hidden" name="emp_id" value="<?php echo $employee['id']; ?>"><button type="submit" name="deleteEmployee" class="btn btn-sm btn-danger">Deactivate</button></form>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
+                                <th>Employee Name</th>
+                                <th class="amount-header">Daily Rate</th>
+                                <th style="width: 150px;" class="amount-header">Days Worked</th>
+                                <th class="amount-header">Total Pay</th>
+                            </tr>
+                        </thead>
+                        <tbody id="casuals-table-body">
+                            <?php foreach ($daily_employees_ui as $emp): ?>
+                            <tr class="casual-row">
+                                <td><?= htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name']) ?></td>
+                                <td class="amount" data-rate="<?= (float)($emp['daily_rate'] ?? 0) ?>">$<?= number_format((float)($emp['daily_rate'] ?? 0), 2) ?></td>
+                                <td><input type="number" name="days_worked[<?= $emp['id'] ?>]" class="form-control days-worked-input" min="0" max="7" value="0" step="1"></td>
+                                <td class="amount row-total">$0.00</td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
+                        <tfoot>
+                            <tr class="total-row"><td colspan="3" style="text-align:right; font-weight: bold;">Total Weekly Payout:</td><td id="grand-total" class="amount" style="font-weight: bold;">$0.00</td></tr>
+                        </tfoot>
                     </table>
                 </div>
-            </div>
-            
-            <div id="addEmployeeTab" class="tab-content">
-                <h3 id="employeeFormTitle">Add New Employee</h3>
-                 <form id="employeeForm" method="post">
-                    <input type="hidden" name="emp_id" id="editEmployeeId">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                        <div class="form-section">
-                            <h4>Personal Information</h4>
-                             <div class="form-group"><label>Employee ID</label><input type="text" name="employee_id" id="formEmployeeId" required class="form-control"></div>
-                             <div class="form-group"><label>First Name</label><input type="text" name="first_name" id="formFirstName" required class="form-control"></div>
-                             <div class="form-group"><label>Last Name</label><input type="text" name="last_name" id="formLastName" required class="form-control"></div>
-                             <div class="form-group"><label>Email</label><input type="email" name="email" id="formEmail" required class="form-control"></div>
-                             <div class="form-group"><label>Phone</label><input type="text" name="phone" id="formPhone" class="form-control"></div>
-                        </div>
-                        <div class="form-section">
-                            <h4>Employment Details</h4>
-                            <div class="form-group"><label>Department</label><select name="department" id="formDepartment" required class="form-control"><option value="">Select Department</option><?php foreach($departments as $dept): ?><option value="<?php echo htmlspecialchars($dept); ?>"><?php echo htmlspecialchars($dept); ?></option><?php endforeach; ?><option value="Other">Other</option></select></div>
-                            <div class="form-group"><label>Position</label><input type="text" name="position" id="formPosition" required class="form-control"></div>
-                            <div class="form-group"><label>Employment Type</label><select name="employment_type" id="formEmploymentType" required class="form-control" onchange="toggleSalaryFields(this.value)"><option value="monthly">Monthly Salary</option><option value="hourly">Hourly Rate</option><option value="daily">Daily Rate</option></select></div>
-                            <div class="form-group"><label>Hire Date</label><input type="date" name="hire_date" id="formHireDate" required class="form-control"></div>
-                            <div class="form-group"><label>Status</label><select name="status" id="formStatus" required class="form-control"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
-                        </div>
-                         <div class="form-section">
-                            <h4>Compensation (KSh)</h4>
-                            <div id="basicSalaryGroup" class="form-group"><label>Basic Salary (Monthly)</label><input type="number" name="basic_salary" id="formBasicSalary" step="0.01" class="form-control" value="0"></div>
-                            <div id="allowancesGroup"><div class="form-group"><label>House Allowance</label><input type="number" name="house_allowance" id="formHouseAllowance" step="0.01" class="form-control" value="0"></div><div class="form-group"><label>Transport Allowance</label><input type="number" name="transport_allowance" id="formTransportAllowance" step="0.01" class="form-control" value="0"></div></div>
-                            <div id="hourlyRateGroup" class="form-group" style="display: none;"><label>Hourly/Daily Rate</label><input type="number" name="hourly_rate" id="formHourlyRate" step="0.01" class="form-control" value="0"></div>
-                         </div>
-                         <div class="form-section">
-                            <h4>Statutory Information</h4>
-                             <div class="form-group"><label>Bank Account No.</label><input type="text" name="bank_account" id="formBankAccount" class="form-control"></div>
-                             <div class="form-group"><label>KRA PIN</label><input type="text" name="kra_pin" id="formKraPin" class="form-control"></div>
-                             <div class="form-group"><label>NHIF Number</label><input type="text" name="nhif_number" id="formNhifNumber" class="form-control"></div>
-                             <div class="form-group"><label>NSSF Number</label><input type="text" name="nssf_number" id="formNssfNumber" class="form-control"></div>
-                         </div>
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit" name="addEmployee" id="employeeSubmitBtn" class="btn btn-primary">Save Employee</button>
-                        <button type="button" onclick="closeModal('employeeModal')" class="btn btn-secondary">Cancel</button>
-                    </div>
-                </form>
+                 <div class="form-actions">
+                    <button type="submit" class="btn-success"><i class="fas fa-hand-holding-usd"></i> Process Weekly Payment</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ======================= Payroll History Tab ======================= -->
+    <div id="history" class="tab-content">
+        <div class="card">
+            <h2>Payroll History</h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Pay Date</th><th>Employee</th><th>Type</th><th>Period</th>
+                            <th class="amount-header">Gross Pay</th><th class="amount-header">Deductions</th><th class="amount-header">Net Pay</th><th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($payroll_history as $record): ?>
+                        <tr>
+                            <td><?= date('d M, Y', strtotime($record['pay_date'])) ?></td>
+                            <td><?= htmlspecialchars($record['employee_name']) ?></td>
+                            <td><span class="badge badge-<?= strtolower($record['employee_type'] ?? 'monthly') ?>"><?= htmlspecialchars(ucfirst($record['employee_type'] ?? 'Monthly')) ?></span></td>
+                            <td><?= htmlspecialchars($record['pay_period']) ?></td>
+                            <td class="amount">$<?= number_format($record['gross_pay'], 2) ?></td>
+                            <td class="amount">$<?= number_format($record['total_deductions'], 2) ?></td>
+                            <td class="amount"><strong>$<?= number_format($record['net_pay'], 2) ?></strong></td>
+                            <td><span class="badge badge-<?= strtolower($record['status']) ?>"><?= htmlspecialchars($record['status']) ?></span></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 </div>
 
-<script>
-const allPayrollRecords = <?php echo json_encode($payrollRecords); ?>;
-function openModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
-function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
-window.onclick = function(event) { if (event.target.classList.contains('modal')) { closeModal(event.target.id); } }
-function openTab(evt, tabName) {
-    document.querySelectorAll('.tab-container > .tab-content').forEach(tab => tab.style.display = 'none');
-    document.querySelectorAll('.tab-container > .tabs > .tab-link').forEach(link => link.classList.remove('active'));
-    document.getElementById(tabName).style.display = 'block';
-    evt.currentTarget.classList.add('active');
-}
-function openSubTab(evt, tabName) {
-    document.querySelectorAll('.modal-body > .tab-content').forEach(tab => tab.style.display = 'none');
-    document.querySelectorAll('.modal-body > .tabs > .tab-link').forEach(link => link.classList.remove('active'));
-    document.getElementById(tabName).style.display = 'block';
-    evt.currentTarget.classList.add('active');
-}
-function toggleSalaryFields(empType) {
-    document.getElementById('basicSalaryGroup').style.display = empType === 'monthly' ? 'block' : 'none';
-    document.getElementById('allowancesGroup').style.display = empType === 'monthly' ? 'block' : 'none';
-    document.getElementById('hourlyRateGroup').style.display = empType !== 'monthly' ? 'block' : 'none';
-}
-function resetEmployeeForm() {
-    document.getElementById('employeeForm').reset();
-    document.getElementById('editEmployeeId').value = '';
-    document.getElementById('employeeFormTitle').innerText = 'Add New Employee';
-    const submitBtn = document.getElementById('employeeSubmitBtn');
-    submitBtn.name = 'addEmployee';
-    submitBtn.innerHTML = '<i class="fas fa-save"></i> Save Employee';
-    toggleSalaryFields('monthly');
-}
-function editEmployee(employeeData) {
-    resetEmployeeForm();
-    document.getElementById('editEmployeeId').value = employeeData.id;
-    document.getElementById('formEmployeeId').value = employeeData.employee_id;
-    document.getElementById('formFirstName').value = employeeData.first_name;
-    document.getElementById('formLastName').value = employeeData.last_name;
-    document.getElementById('formEmail').value = employeeData.email;
-    document.getElementById('formPhone').value = employeeData.phone;
-    document.getElementById('formDepartment').value = employeeData.department;
-    document.getElementById('formPosition').value = employeeData.position;
-    document.getElementById('formEmploymentType').value = employeeData.employment_type;
-    document.getElementById('formHireDate').value = employeeData.hire_date;
-    document.getElementById('formStatus').value = employeeData.status;
-    document.getElementById('formBasicSalary').value = employeeData.basic_salary || 0;
-    document.getElementById('formHouseAllowance').value = employeeData.house_allowance || 0;
-    document.getElementById('formTransportAllowance').value = employeeData.transport_allowance || 0;
-    document.getElementById('formHourlyRate').value = employeeData.hourly_rate || 0;
-    document.getElementById('formBankAccount').value = employeeData.bank_account;
-    document.getElementById('formKraPin').value = employeeData.kra_pin;
-    document.getElementById('formNhifNumber').value = employeeData.nhif_number;
-    document.getElementById('formNssfNumber').value = employeeData.nssf_number;
-    document.getElementById('employeeFormTitle').innerText = 'Edit Employee';
-    const submitBtn = document.getElementById('employeeSubmitBtn');
-    submitBtn.name = 'updateEmployee';
-    submitBtn.innerHTML = '<i class="fas fa-save"></i> Update Employee';
-    toggleSalaryFields(employeeData.employment_type);
-    openSubTab({ currentTarget: document.querySelector('.modal-body .tab-link:nth-child(2)') }, 'addEmployeeTab');
-}
-function loadEmployeeDataForPayroll() {
-    const select = document.getElementById('employeeSelect');
-    if (!select.value) { document.getElementById('payrollForm').reset(); calculatePayroll(); return; };
-    const employee = JSON.parse(select.value);
-    document.getElementById('payrollEmployeeId').value = employee.id;
-    document.getElementById('payrollEmployeeName').value = employee.first_name + ' ' + employee.last_name;
-    document.getElementById('payrollEmployeeType').value = employee.employment_type;
-    document.getElementById('payrollBasicSalary').value = employee.basic_salary || 0;
-    document.getElementById('payrollHouseAllowance').value = employee.house_allowance || 0;
-    document.getElementById('payrollTransportAllowance').value = employee.transport_allowance || 0;
-    calculatePayroll();
-}
-function validatePayrollForm() {
-    if(!document.getElementById('payrollEmployeeId').value) { alert('Please select an employee first.'); return false; }
-    return true;
-}
-function calculateKenyanPAYE(grossPay) {
-    if (grossPay <= 0) return 0; const relief = 2400; let paye = 0;
-    if (grossPay <= 24000) { paye = grossPay * 0.10; }
-    else if (grossPay <= 32333) { paye = 2400 + ((grossPay - 24000) * 0.25); }
-    else if (grossPay <= 500000) { paye = 4483.25 + ((grossPay - 32333) * 0.30); }
-    else if (grossPay <= 800000) { paye = 144783.33 + ((grossPay - 500000) * 0.325); }
-    else { paye = 242283.33 + ((grossPay - 800000) * 0.35); }
-    return Math.max(0, paye - relief);
-}
-function calculateKenyanNHIF(grossPay) {
-    if (grossPay <= 5999) return 150; if (grossPay <= 7999) return 300; if (grossPay <= 11999) return 400; if (grossPay <= 14999) return 500; if (grossPay <= 19999) return 600; if (grossPay <= 24999) return 750; if (grossPay <= 29999) return 850; if (grossPay <= 34999) return 900; if (grossPay <= 39999) return 950; if (grossPay <= 44999) return 1000; if (grossPay <= 49999) return 1100; if (grossPay <= 59999) return 1200; if (grossPay <= 69999) return 1300; if (grossPay <= 79999) return 1400; if (grossPay <= 89999) return 1500; if (grossPay <= 99999) return 1600; return 1700;
-}
-function calculateKenyanNSSF(grossPay) {
-    const tier1Limit = 7000; const tier2Limit = 36000; const rate = 0.06; let nssf = 0;
-    nssf += Math.min(grossPay, tier1Limit) * rate;
-    if (grossPay > tier1Limit) { nssf += Math.min(grossPay - tier1Limit, tier2Limit - tier1Limit) * rate; }
-    return nssf;
-}
-function calculatePayroll() {
-    const basic = parseFloat(document.getElementById('payrollBasicSalary').value) || 0;
-    const house = parseFloat(document.getElementById('payrollHouseAllowance').value) || 0;
-    const transport = parseFloat(document.getElementById('payrollTransportAllowance').value) || 0;
-    const otherDed = parseFloat(document.getElementById('otherDeduction').value) || 0;
-    const grossPay = basic + house + transport;
-    const paye = calculateKenyanPAYE(grossPay);
-    const nhif = calculateKenyanNHIF(grossPay);
-    const nssf = calculateKenyanNSSF(grossPay);
-    const totalDeductions = paye + nhif + nssf + otherDed;
-    document.getElementById('payrollGrossPay').value = 'KSh ' + grossPay.toFixed(2);
-    document.getElementById('payeCalculatedDisplay').value = 'KSh ' + paye.toFixed(2);
-    document.getElementById('payeCalculated').value = paye.toFixed(2);
-    document.getElementById('nhifCalculatedDisplay').value = 'KSh ' + nhif.toFixed(2);
-    document.getElementById('nhifCalculated').value = nhif.toFixed(2);
-    document.getElementById('nssfCalculatedDisplay').value = 'KSh ' + nssf.toFixed(2);
-    document.getElementById('nssfCalculated').value = nssf.toFixed(2);
-    document.getElementById('payrollTotalDeductions').value = 'KSh ' + totalDeductions.toFixed(2);
-    document.getElementById('payrollNetPay').value = 'KSh ' + (grossPay - totalDeductions).toFixed(2);
-}
-function generateReport() {
-    const reportType = document.getElementById('reportType').value;
-    const period = document.getElementById('reportPeriod').value;
-    const reportOutput = document.getElementById('reportOutput');
-    const filteredRecords = allPayrollRecords.filter(r => r.pay_period === period && r.status === 'Paid');
-    let reportTitle = reportType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    let html = `<h4>${reportTitle} for ${period}</h4>`;
-    if (filteredRecords.length === 0) {
-        reportOutput.innerHTML = html + '<p class="text-center">No "Paid" records found for this period to generate the report.</p>';
-        return;
-    }
-    if (reportType === 'bank_advice') {
-        html += '<table class="table"><thead><tr><th>Employee Name</th><th class="amount">Net Pay (KSh)</th></tr></thead><tbody>';
-        let totalNet = 0;
-        filteredRecords.forEach(r => { html += `<tr><td>${r.employee_name}</td><td class="amount">${parseFloat(r.net_pay).toFixed(2)}</td></tr>`; totalNet += parseFloat(r.net_pay); });
-        html += `<tr class="total-row" style="font-weight:bold;"><td>TOTAL</td><td class="amount">${totalNet.toFixed(2)}</td></tr></tbody></table>`;
-    } else if (reportType === 'statutory') {
-        html += '<table class="table"><thead><tr><th>Employee Name</th><th class="amount">PAYE</th><th class="amount">NHIF</th><th class="amount">NSSF</th></tr></thead><tbody>';
-        let totalPAYE = 0, totalNHIF = 0, totalNSSF = 0;
-        filteredRecords.forEach(r => { html += `<tr><td>${r.employee_name}</td><td class="amount">${parseFloat(r.tax).toFixed(2)}</td><td class="amount">${parseFloat(r.insurance).toFixed(2)}</td><td class="amount">${parseFloat(r.retirement).toFixed(2)}</td></tr>`; totalPAYE += parseFloat(r.tax); totalNHIF += parseFloat(r.insurance); totalNSSF += parseFloat(r.retirement); });
-        html += `<tr style="font-weight:bold;"><td>TOTALS</td><td class="amount">${totalPAYE.toFixed(2)}</td><td class="amount">${totalNHIF.toFixed(2)}</td><td class="amount">${totalNSSF.toFixed(2)}</td></tr></tbody></table>`;
-    }
-    reportOutput.innerHTML = html;
-}
-document.addEventListener('DOMContentLoaded', () => {
-    const firstTab = document.querySelector('.tab-container > .tabs > .tab-link');
-    if(firstTab) firstTab.click();
-    const firstSubTab = document.querySelector('.modal-body > .tabs > .tab-link');
-    if(firstSubTab) firstSubTab.click();
-});
-</script>
+<!-- =================================================================================== -->
+<!-- --- JAVASCRIPT & STYLES --- -->
+<!-- =================================================================================== -->
+<style>
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    fieldset { border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+    legend { font-weight: bold; color: var(--primary); padding: 0 10px; }
+    .amount-header, .amount { text-align: right; font-family: 'Courier New', Courier, monospace; }
+    .total-row { background-color: #f8f9fa; font-size: 1.1em; }
+    .badge.badge-daily { background-color: #ffc107; color: #212529; }
+    .badge.badge-monthly { background-color: #17a2b8; color: white; }
+    .badge.badge-processed, .badge.badge-paid { background-color: #28a745; color: white; }
+    .badge.badge-active { background-color: #28a745; color: white; }
+    .badge.badge-inactive { background-color: #6c757d; color: white; }
+</style>
 
-<?php include 'footer.php'; ?>
+<script>
+    function openTab(evt, tabName) {
+        document.querySelectorAll(".tab-content").forEach(tab => tab.style.display = "none");
+        document.querySelectorAll(".tab-link").forEach(link => link.classList.remove("active"));
+        document.getElementById(tabName).style.display = "block";
+        evt.currentTarget.classList.add("active");
+    }
+
+    function toggleSalaryFields() {
+        const type = document.getElementById('employment_type').value;
+        document.getElementById('monthly_fields').style.display = (type === 'monthly') ? 'block' : 'none';
+        document.getElementById('daily_fields').style.display = (type === 'daily') ? 'block' : 'none';
+    }
+
+    function calculateCasualsPay() {
+        let grandTotal = 0;
+        document.querySelectorAll('.casual-row').forEach(row => {
+            const rate = parseFloat(row.querySelector('[data-rate]').dataset.rate);
+            const days = parseFloat(row.querySelector('.days-worked-input').value) || 0;
+            const rowTotal = rate * days;
+            row.querySelector('.row-total').textContent = '$' + rowTotal.toFixed(2);
+            grandTotal += rowTotal;
+        });
+        document.getElementById('grand-total').textContent = '$' + grandTotal.toFixed(2);
+    }
+
+    function resetEmployeeForm() {
+        document.getElementById('employee-form').reset();
+        document.getElementById('employee-form-title').textContent = 'Add New Employee';
+        document.getElementById('employee_action').value = 'add_employee';
+        document.getElementById('employee_id_hidden').value = '';
+        document.getElementById('employee-form-submit').innerHTML = '<i class="fas fa-plus"></i> Add Employee';
+        document.getElementById('employee-form-submit').classList.remove('btn-warning');
+        document.getElementById('employee-form-submit').classList.add('btn-success');
+        toggleSalaryFields();
+    }
+
+    function editEmployee(employee) {
+        // Switch to the Add/Edit tab
+        document.querySelector('button[onclick*="add_employee"]').click();
+
+        // Populate the form
+        document.getElementById('employee-form-title').textContent = 'Edit Employee: ' + employee.first_name + ' ' + employee.last_name;
+        document.getElementById('employee_action').value = 'update_employee';
+        document.getElementById('employee_id_hidden').value = employee.id;
+        
+        document.getElementById('first_name').value = employee.first_name;
+        document.getElementById('last_name').value = employee.last_name;
+        document.getElementById('employee_id').value = employee.employee_id;
+        document.getElementById('email').value = employee.email;
+        document.getElementById('phone').value = employee.phone;
+        document.getElementById('hire_date').value = employee.hire_date;
+        document.getElementById('department').value = employee.department;
+        document.getElementById('position').value = employee.position;
+        document.getElementById('employment_type').value = employee.employment_type;
+        document.getElementById('status').value = employee.status;
+        
+        document.getElementById('basic_salary').value = employee.basic_salary;
+        document.getElementById('house_allowance').value = employee.house_allowance;
+        document.getElementById('transport_allowance').value = employee.transport_allowance;
+        document.getElementById('daily_rate').value = employee.daily_rate;
+
+        document.getElementById('kra_pin').value = employee.kra_pin;
+        document.getElementById('nhif_number').value = employee.nhif_number;
+        document.getElementById('nssf_number').value = employee.nssf_number;
+
+        // Change button text and color
+        const submitBtn = document.getElementById('employee-form-submit');
+        submitBtn.innerHTML = '<i class="fas fa-save"></i> Update Employee';
+        submitBtn.classList.remove('btn-success');
+        submitBtn.classList.add('btn-warning');
+
+        toggleSalaryFields();
+        window.scrollTo(0, 0); // Scroll to top
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const firstTab = document.querySelector('.tab-container .tab-link');
+        if (firstTab) { firstTab.click(); }
+
+        const casualsTable = document.getElementById('casuals-table-body');
+        if (casualsTable) {
+            casualsTable.addEventListener('input', (event) => {
+                if (event.target.classList.contains('days-worked-input')) {
+                    calculateCasualsPay();
+                }
+            });
+        }
+    });
+</script>

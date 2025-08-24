@@ -3,40 +3,51 @@ require 'config.php';
 require 'functions.php';
 
 header('Content-Type: application/json');
+session_start();
 
 try {
-    // Validate student ID
+    // Check for user authentication and school context
+    if (!isset($_SESSION['user_id']) || !isset($_SESSION['school_id'])) {
+        throw new Exception('Authentication required.');
+    }
+    $school_id = $_SESSION['school_id'];
+
+    // Validate student ID from the GET request
     if (!isset($_GET['student_id'])) {
-        throw new Exception('Student ID is required');
+        throw new Exception('Student ID is required.');
     }
-
     $student_id = filter_input(INPUT_GET, 'student_id', FILTER_VALIDATE_INT);
-    
     if (!$student_id || $student_id < 1) {
-        throw new Exception('Invalid Student ID');
+        throw new Exception('Invalid Student ID.');
     }
 
-    // Get unpaid invoices with positive balance
+    // Corrected and simplified query:
+    // - Uses the reliable, pre-calculated 'balance' column from the invoices table.
+    // - Adds the crucial 'school_id' check for multi-tenancy security.
+    // - Uses a small threshold (0.009) to safely handle floating-point numbers.
     $stmt = $pdo->prepare("
         SELECT 
-            i.id,
-            i.invoice_date,
-            i.due_date,
-            i.total_amount,
-            COALESCE(SUM(p.amount), 0) AS paid_amount,
-            (i.total_amount - COALESCE(SUM(p.amount), 0)) AS balance
-        FROM invoices i
-        LEFT JOIN payments p ON p.invoice_id = i.id
-        WHERE i.student_id = ?
-        GROUP BY i.id
-        HAVING balance > 0
-        ORDER BY i.due_date ASC
+            id,
+            invoice_date,
+            due_date,
+            total_amount,
+            paid_amount,
+            balance
+        FROM invoices
+        WHERE student_id = :student_id 
+          AND school_id = :school_id
+          AND balance > 0.009
+        ORDER BY due_date ASC
     ");
 
-    $stmt->execute([$student_id]);
+    $stmt->execute([
+        ':student_id' => $student_id,
+        ':school_id' => $school_id
+    ]);
+    
     $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Format amounts as floats
+    // Ensure numeric types are correctly cast for JSON response
     foreach ($invoices as &$invoice) {
         $invoice['total_amount'] = (float)$invoice['total_amount'];
         $invoice['paid_amount'] = (float)$invoice['paid_amount'];
@@ -49,7 +60,7 @@ try {
     ]);
 
 } catch (Exception $e) {
-    http_response_code(400);
+    http_response_code(400); // Set appropriate error status
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()

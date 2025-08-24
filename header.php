@@ -1,6 +1,11 @@
 <?php
 // header.php - Secure Session Management & Dynamic Header
-session_start();
+
+// Check if a session is not already active before starting one
+if (session_status() == PHP_SESSION_NONE) {
+    session_start();
+}
+
 require_once 'config.php'; // Use require_once to prevent re-declaration errors
 
 // --- Page & User Authentication ---
@@ -84,7 +89,7 @@ $pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' 
                 </div>
                 <div class="brand-text">
                     <h1><?php echo htmlspecialchars($current_school_name); ?></h1>
-                    <div class="subtitle">School Finance Management System</div>
+                    <div class="subtitle">Finance Management Dashboard</div>
                 </div>
             </div>
             <div class="header-actions">
@@ -120,8 +125,14 @@ $pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' 
                     <a href="payroll.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'payroll.php' ? 'active' : ''; ?>">
                         <i class="fas fa-money-check-alt"></i> Payroll
                     </a>
+                    <a href="budget.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'budget.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-calculator"></i> Budgeting
+                    </a>
                     <a href="reports.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
                         <i class="fas fa-chart-bar"></i> Reports
+                    </a>
+                    <a href="bulk_actions.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'bulk_actions.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-cogs"></i> Bulk Actions
                     </a>
                     <a href="profile.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                         <i class="fas fa-user-cog"></i> My Profile
