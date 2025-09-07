@@ -4,9 +4,10 @@
 require_once 'vendor/autoload.php';
 
 // --- Africa's Talking API Credentials ---
-define('AT_USERNAME', 'sandbox'); // Use 'sandbox' for testing, or your live username
-define('AT_API_KEY', 'atsk_a87578d74a7c3af4f03fa7ac2686f783b33df71e62dafdc69a00dd7e68a9a1342b4d5e00'); // Your actual API Key
-
+define('AT_USERNAME', 'blooms-mis'); // Use 'sandbox' for testing, or your live username
+define('AT_API_KEY', 'atsk_c5a9088721049e58369f9897c2e083c2b845d7ac3ea8a8c1f0f504892b2f751c7b57e638'); // Your actual API Key
+define('AT_SENDER_ID', 'Bloomsfield');
+define('BASE_URL', 'https://dc1495eb818e.ngrok-free.app/schoolpay');
 
 define('DB_HOST', 'localhost');
 define('DB_NAME', 'school_finance');

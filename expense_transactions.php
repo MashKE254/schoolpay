@@ -5,9 +5,10 @@ session_start();
 require 'config.php';
 require 'functions.php';
 
+header('Content-Type: application/json');
+
 // Ensure user is logged in and has a school ID
 if (!isset($_SESSION['school_id'])) {
-    header('Content-Type: application/json');
     echo json_encode(['success' => false, 'error' => 'Authentication required.']);
     exit;
 }
@@ -64,25 +65,26 @@ $stmt->execute($params);
 $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 
-// --- Query 2: Calculate the specific "Total Expenses" for the same period ---
-$query_expenses = "
-    SELECT COALESCE(SUM(e.amount), 0)
+// --- Query 2: Calculate the summary totals for the same filtered period ---
+$query_summary = "
+    SELECT 
+        COALESCE(SUM(CASE WHEN e.transaction_type = 'debit' THEN e.amount ELSE 0 END), 0) as total_debits,
+        COALESCE(SUM(CASE WHEN e.transaction_type = 'credit' THEN e.amount ELSE 0 END), 0) as total_credits
     FROM expenses e
-    JOIN accounts a ON e.account_id = a.id
-    {$whereClause} AND a.account_type = 'expense' AND e.transaction_type = 'debit'
+    {$whereClause}
 ";
-$stmt_expenses = $pdo->prepare($query_expenses);
-$stmt_expenses->execute($params);
-$total_expenses = $stmt_expenses->fetchColumn();
+$stmt_summary = $pdo->prepare($query_summary);
+$stmt_summary->execute($params);
+$summary = $stmt_summary->fetch(PDO::FETCH_ASSOC);
 
 
 // --- Return all data as a single JSON response ---
-header('Content-Type: application/json');
 echo json_encode([
     'success' => true,
     'transactions' => $transactions,
     'summary' => [
-        'total_expenses' => (float)$total_expenses
+        'total_debits' => (float)($summary['total_debits'] ?? 0),
+        'total_credits' => (float)($summary['total_credits'] ?? 0)
     ]
 ]);
 exit;

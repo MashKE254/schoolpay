@@ -5,11 +5,12 @@
  * A comprehensive page for managing school finances. It includes:
  * - Chart of Accounts management (Add/Edit/Delete).
  * - Manual Journal Entry creation.
+ * - Vehicle Expense, Supplier Payment, and Service Payment entry with QR Code upload.
  * - Bulk expense processing via CSV Requisition uploads.
  * - A dynamic, filterable General Ledger for all transactions.
  *
- * All POST logic is handled at the top of the script before any HTML output
- * to ensure redirects and session messages function correctly.
+ * All POST logic for account management is handled at the top of the script
+ * before any HTML output to ensure redirects and session messages function correctly.
  */
 
 require_once 'config.php';
@@ -43,12 +44,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                  throw new Exception("Account code, name, and type are required.");
             }
             
-            // Check if the account code is already used by ANY school, due to the global unique key constraint
-            $stmt_check = $pdo->prepare("SELECT id FROM accounts WHERE account_code = ?");
-            $stmt_check->execute([$account_code]);
+            // Check if the account code is already used by THIS school
+            $stmt_check = $pdo->prepare("SELECT id FROM accounts WHERE account_code = ? AND school_id = ?");
+            $stmt_check->execute([$account_code, $school_id]);
             if ($stmt_check->fetch()) {
-                // This message now correctly informs the user that the code is taken globally
-                throw new Exception("The Account Code '" . htmlspecialchars($account_code) . "' is already in use across the system. Please choose a completely unique code.");
+                throw new Exception("The Account Code '" . htmlspecialchars($account_code) . "' is already in use for your school. Please choose a unique code.");
             }
 
             createAccount(
@@ -98,6 +98,10 @@ require_once 'header.php';
 // This runs after all POST logic is complete.
 $accounts = getChartOfAccounts($pdo, $school_id);
 
+// Filter accounts by type for use in form dropdowns
+$asset_accounts = array_filter($accounts, fn($acc) => $acc['account_type'] == 'asset');
+$expense_accounts = array_filter($accounts, fn($acc) => $acc['account_type'] == 'expense');
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -105,7 +109,6 @@ $accounts = getChartOfAccounts($pdo, $school_id);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Expense Management System</title>
-    <!-- Stylesheets are included in header.php -->
     <style>
         /* General Styles */
         .amount-header, .amount { text-align: right; }
@@ -123,8 +126,37 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             max-height: 600px; /* Adjust as needed */
             padding-top: 20px; 
         }
+        
+        /* Grid layout for forms */
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
 
-        /* General Ledger Specific Styles */
+        /* Receipt Upload Controls */
+        .receipt-upload-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .receipt-filename {
+            margin-left: 10px;
+            font-style: italic;
+            color: #555;
+            font-size: 0.9em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #receipt-thumbnail {
+            max-height: 40px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        /* General Ledger Styles */
         .ledger-filters { 
             display: grid; 
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); 
@@ -146,17 +178,63 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             justify-content: flex-end;
             border: 1px solid var(--border);
         }
-        #ledger-table-body .loading-row td { 
+        #ledger-table-body .loading-row td,
+        #ledger-table-body .no-results-row td { 
             text-align: center; 
             padding: 40px; 
             font-style: italic; 
             color: #777; 
         }
+
+        /* QR Code Modal Styles */
+        .qr-modal {
+            display: none; 
+            position: fixed; 
+            z-index: 1000; 
+            left: 0; 
+            top: 0; 
+            width: 100%; 
+            height: 100%; 
+            overflow: auto; 
+            background-color: rgba(0,0,0,0.6); 
+            justify-content: center; 
+            align-items: center; 
+        }
+        .qr-modal-content { 
+            background-color: #fff; 
+            padding: 25px; 
+            border: 1px solid #888; 
+            width: 90%; 
+            max-width: 400px; 
+            text-align: center; 
+            border-radius: 8px; 
+            position: relative; 
+        }
+        .qr-modal .close { 
+            position: absolute; 
+            top: 10px; 
+            right: 20px; 
+            color: #aaa; 
+            font-size: 28px; 
+            font-weight: bold; 
+            cursor: pointer; 
+        }
+        #qr-code-img { 
+            max-width: 100%; 
+            height: auto; 
+            margin-top: 15px; 
+            border: 1px solid #ddd; 
+        }
+        #qr-status { 
+            margin-top: 15px; 
+            font-weight: bold; 
+            color: #333; 
+        }
+        .variance-favorable { color: #28a745; }
+        .variance-unfavorable { color: #dc3545; }
     </style>
 </head>
 <body>
-    <!-- The opening <div class="container"> is in header.php -->
-    
     <div class="page-header">
         <div class="page-header-title">
             <h1><i class="fas fa-receipt"></i> Expense Management</h1>
@@ -176,10 +254,12 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             <button class="tab-link" onclick="openTab(event, 'charts')"><i class="fas fa-sitemap"></i> Chart of Accounts</button>
             <button class="tab-link" onclick="openTab(event, 'journal')"><i class="fas fa-book"></i> Journal Entry</button>
             <button class="tab-link" onclick="openTab(event, 'requisition')"><i class="fas fa-file-invoice-dollar"></i> Requisition</button>
+            <button class="tab-link" onclick="openTab(event, 'vehicle')"><i class="fas fa-truck"></i> Vehicle Expense</button>
+            <button class="tab-link" onclick="openTab(event, 'supplier')"><i class="fas fa-dolly"></i> Supplier Payment</button>
+            <button class="tab-link" onclick="openTab(event, 'service')"><i class="fas fa-concierge-bell"></i> Service Payment</button>
             <button class="tab-link active" onclick="openTab(event, 'ledger')"><i class="fas fa-book-open"></i> General Ledger</button>
         </div>
 
-        <!-- Tab 1: Chart of Accounts -->
         <div id="charts" class="tab-content">
             <div class="card">
                 <h2>Chart of Accounts</h2>
@@ -208,7 +288,7 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                                     <td><?= htmlspecialchars($account['account_code']) ?></td>
                                     <td><?= htmlspecialchars($account['account_name']) ?></td>
                                     <td><?= htmlspecialchars(ucfirst($account['account_type'])) ?></td>
-                                    <td class="amount">$<?= number_format($account['balance'], 2) ?></td>
+                                    <td class="amount"><?= format_currency($account['balance']) ?></td>
                                     <td>
                                         <div class="action-buttons">
                                             <button class="btn-icon" title="Edit" onclick='openEditModal(<?= htmlspecialchars(json_encode($account), ENT_QUOTES, "UTF-8") ?>)'><i class="fas fa-edit"></i></button>
@@ -228,13 +308,12 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             </div>
         </div>
         
-        <!-- Tab 2: Journal Entry -->
         <div id="journal" class="tab-content">
              <div class="card">
-                <h2>Journal Entry</h2>
+                <h2>Manual Journal Entry</h2>
                 <form id="journalForm" onsubmit="submitJournal(event)">
                     <div class="form-group"><label>Entry Date</label><input type="date" name="entry_date" value="<?= date('Y-m-d') ?>" required></div>
-                    <div class="form-group"><label>Description</label><textarea name="description" rows="3" placeholder="Enter a brief description for this journal entry..."></textarea></div>
+                    <div class="form-group"><label>Description</label><textarea name="description" rows="2" placeholder="Enter a brief description for this journal entry..."></textarea></div>
                     <div id="journalLines">
                         <div class="journal-line" style="display:flex; gap:10px; margin-bottom:10px;">
                             <select name="account[]" required style="flex:3;"><option value="">Select Account</option><?php foreach ($accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_code']) ?> - <?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?></select>
@@ -250,8 +329,7 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                 </form>
             </div>
         </div>
-
-        <!-- Tab 3: Requisition -->
+        
         <div id="requisition" class="tab-content">
             <div class="card">
                 <h2>Process Weekly Requisition</h2>
@@ -265,11 +343,7 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                         <label for="payment_account_id">Pay From Account</label>
                         <select name="payment_account_id" required>
                             <option value="">-- Select Petty Cash / Bank --</option>
-                            <?php 
-                            // Only show Asset accounts as payment sources
-                            $asset_accounts = array_filter($accounts, fn($acc) => $acc['account_type'] == 'asset');
-                            foreach ($asset_accounts as $acc): 
-                            ?>
+                            <?php foreach ($asset_accounts as $acc): ?>
                                 <option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -284,8 +358,125 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                 </form>
             </div>
         </div>
+
+        <div id="vehicle" class="tab-content">
+            <div class="card">
+                <h2>Log Vehicle Expense</h2>
+                <form id="vehicleExpenseForm" onsubmit="submitForm(event, 'vehicle_expense.php', 'vehicleExpenseForm')">
+                    <input type="hidden" name="uploaded_receipt_path" class="uploaded-receipt-path">
+                    <div class="form-grid">
+                        <div class="form-group"><label for="vex_date">Date</label><input type="date" id="vex_date" name="expense_date" value="<?= date('Y-m-d') ?>" required></div>
+                        <div class="form-group"><label for="vex_vehicle">Vehicle ID</label><input type="text" id="vex_vehicle" name="vehicle_id" placeholder="e.g., KDA 123X" required></div>
+                        <div class="form-group"><label for="vex_pay_from">Pay From</label>
+                            <select id="vex_pay_from" name="payment_account_id" required>
+                                <option value="">-- Select Asset Account --</option>
+                                <?php foreach ($asset_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group"><label for="vex_type">Expense Type</label>
+                            <select id="vex_type" name="expense_type" required>
+                                <option value="">-- Select Type --</option><option value="fuel">Fuel</option><option value="maintenance">Maintenance</option><option value="insurance">Insurance</option><option value="repairs">Repairs</option><option value="other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label for="vex_account">Expense Account</label>
+                             <select id="vex_account" name="account_id" required>
+                                <option value="">-- Select Expense Account --</option>
+                                <?php foreach ($expense_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group"><label for="vex_amount">Amount</label><input type="number" id="vex_amount" name="amount" step="0.01" required></div>
+                        <div class="form-group"><label for="vex_odometer">Odometer (Optional)</label><input type="number" id="vex_odometer" name="odometer" placeholder="e.g., 150234"></div>
+                        <div class="form-group">
+                            <label>Receipt (Optional)</label>
+                            <div class="receipt-upload-controls">
+                                <input type="file" name="receipt_image" accept="image/*" class="receipt-file-input" style="display:none;">
+                                <button type="button" class="btn-secondary" onclick="showQrCode(this)"><i class="fas fa-mobile-alt"></i> Take with Phone</button>
+                                <button type="button" class="btn-secondary receipt-action-btn" data-action="upload"><i class="fas fa-folder-open"></i> Upload File</button>
+                                <span class="receipt-filename"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 20px;"><label for="vex_desc">Description (Optional)</label><textarea id="vex_desc" name="description" rows="2" placeholder="e.g., Replaced front brake pads..."></textarea></div>
+                    <div class="form-actions"><button type="submit" class="btn-success"><i class="fas fa-save"></i> Post Expense</button></div>
+                </form>
+            </div>
+        </div>
+
+        <div id="supplier" class="tab-content">
+             <div class="card">
+                <h2>Log Supplier Payment</h2>
+                <form id="supplierPaymentForm" onsubmit="submitForm(event, 'supplier_payment.php', 'supplierPaymentForm')">
+                    <input type="hidden" name="uploaded_receipt_path" class="uploaded-receipt-path">
+                    <div class="form-grid">
+                        <div class="form-group"><label for="sup_date">Date</label><input type="date" id="sup_date" name="payment_date" value="<?= date('Y-m-d') ?>" required></div>
+                        <div class="form-group"><label for="sup_name">Supplier Name</label><input type="text" id="sup_name" name="supplier_name" placeholder="e.g., Naivas Supermarket" required></div>
+                        <div class="form-group"><label for="sup_pay_from">Pay From</label>
+                            <select id="sup_pay_from" name="payment_account_id" required>
+                                <option value="">-- Select Asset Account --</option>
+                                <?php foreach ($asset_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                         <div class="form-group"><label for="sup_account">Expense Category</label>
+                             <select id="sup_account" name="account_id" required>
+                                <option value="">-- Select Expense Account --</option>
+                                <?php foreach ($expense_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group"><label for="sup_amount">Amount</label><input type="number" id="sup_amount" name="amount" step="0.01" required></div>
+                        <div class="form-group"><label for="sup_invoice">Invoice # (Optional)</label><input type="text" id="sup_invoice" name="invoice_number" placeholder="e.g., INV-1023"></div>
+                        <div class="form-group">
+                            <label>Receipt (Optional)</label>
+                            <div class="receipt-upload-controls">
+                                <input type="file" name="receipt_image" accept="image/*" class="receipt-file-input" style="display:none;">
+                                <button type="button" class="btn-secondary" onclick="showQrCode(this)"><i class="fas fa-mobile-alt"></i> Take with Phone</button>
+                                <button type="button" class="btn-secondary receipt-action-btn" data-action="upload"><i class="fas fa-folder-open"></i> Upload File</button>
+                                <span class="receipt-filename"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 20px;"><label for="sup_desc">Description (Optional)</label><textarea id="sup_desc" name="description" rows="2" placeholder="e.g., Purchase of weekly groceries..."></textarea></div>
+                    <div class="form-actions"><button type="submit" class="btn-success"><i class="fas fa-save"></i> Post Payment</button></div>
+                </form>
+            </div>
+        </div>
         
-        <!-- Tab 4: General Ledger -->
+        <div id="service" class="tab-content">
+            <div class="card">
+                <h2>Log Service Payment</h2>
+                <form id="servicePaymentForm" onsubmit="submitForm(event, 'service_payment.php', 'servicePaymentForm')">
+                    <input type="hidden" name="uploaded_receipt_path" class="uploaded-receipt-path">
+                     <div class="form-grid">
+                        <div class="form-group"><label for="ser_date">Date</label><input type="date" id="ser_date" name="payment_date" value="<?= date('Y-m-d') ?>" required></div>
+                        <div class="form-group"><label for="ser_name">Provider Name</label><input type="text" id="ser_name" name="provider_name" placeholder="e.g., Kenya Power, Nairobi Water" required></div>
+                        <div class="form-group"><label for="ser_pay_from">Pay From</label>
+                            <select id="ser_pay_from" name="payment_account_id" required>
+                                <option value="">-- Select Asset Account --</option>
+                                <?php foreach ($asset_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                         <div class="form-group"><label for="ser_account">Expense Category</label>
+                             <select id="ser_account" name="account_id" required>
+                                <option value="">-- Select Expense Account --</option>
+                                <?php foreach ($expense_accounts as $acc): ?><option value="<?= $acc['id'] ?>"><?= htmlspecialchars($acc['account_name']) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group"><label for="ser_amount">Amount</label><input type="number" id="ser_amount" name="amount" step="0.01" required></div>
+                        <div class="form-group">
+                            <label>Receipt (Optional)</label>
+                            <div class="receipt-upload-controls">
+                                <input type="file" name="receipt_image" accept="image/*" class="receipt-file-input" style="display:none;">
+                                <button type="button" class="btn-secondary" onclick="showQrCode(this)"><i class="fas fa-mobile-alt"></i> Take with Phone</button>
+                                <button type="button" class="btn-secondary receipt-action-btn" data-action="upload"><i class="fas fa-folder-open"></i> Upload File</button>
+                                <span class="receipt-filename"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 20px;"><label for="ser_desc">Description</label><textarea id="ser_desc" name="description" rows="2" placeholder="e.g., Payment for Electricity Bill..." required></textarea></div>
+                    <div class="form-actions"><button type="submit" class="btn-success"><i class="fas fa-save"></i> Post Payment</button></div>
+                </form>
+            </div>
+        </div>
+        
         <div id="ledger" class="tab-content active">
             <div class="card">
                 <h2>General Ledger</h2>
@@ -324,15 +515,13 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                     <table id="ledger-table">
                         <thead><tr><th>Date</th><th>Account</th><th>Description</th><th class="amount-header">Debit</th><th class="amount-header">Credit</th><th>Receipt</th></tr></thead>
                         <tbody id="ledger-table-body">
-                           <!-- Rows will be inserted here by JavaScript -->
-                        </tbody>
+                           </tbody>
                     </table>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Edit Account Modal -->
     <div id="editModal" class="modal">
         <div class="modal-content">
             <span class="close" onclick="closeEditModal()">&times;</span>
@@ -357,9 +546,20 @@ $accounts = getChartOfAccounts($pdo, $school_id);
         </div>
     </div>
     
+    <div id="qrModal" class="qr-modal">
+        <div class="qr-modal-content">
+            <span class="close" onclick="closeQrModal()">&times;</span>
+            <h3>Scan with your Phone</h3>
+            <p>Open your phone's camera and scan the code below.</p>
+            <img id="qr-code-img" src="" alt="QR Code">
+            <div id="qr-status"><i class="fas fa-spinner fa-spin"></i> Waiting for scan...</div>
+        </div>
+    </div>
+    
     <script>
         // Store accounts data from PHP for use in JavaScript
         const accountsData = <?= json_encode($accounts) ?>;
+        const currencySymbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
 
         /**
          * Handles switching between tabs.
@@ -375,24 +575,18 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             tabToShow.classList.add('active');
             evt.currentTarget.classList.add("active");
 
-            // If the General Ledger tab is opened, fetch its data.
             if (tabName === 'ledger') {
                 fetchLedgerData();
             }
         }
         
-        /**
-         * On page load, check for a 'tab' URL parameter to open a specific tab.
-         * This is useful for redirecting back to the correct view after a form submission.
-         */
         document.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams(window.location.search);
-            const tab = params.get('tab') || 'ledger'; // Default to ledger
+            const tab = params.get('tab') || 'ledger'; 
             const tabButton = document.querySelector(`.tab-link[onclick*="'${tab}'"]`);
             if (tabButton) {
                 tabButton.click();
             } else {
-                // Fallback to the first tab if the specified one doesn't exist
                 document.querySelector('.tab-link').click();
             }
         });
@@ -411,7 +605,6 @@ $accounts = getChartOfAccounts($pdo, $school_id);
 
         function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
         
-        // Close modal if user clicks outside of it
         window.onclick = function(event) { if (event.target.classList.contains('modal')) event.target.style.display = 'none'; };
 
         // --- Journal Entry Functions ---
@@ -420,13 +613,8 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             const newLine = document.createElement('div');
             newLine.className = 'journal-line';
             newLine.style.cssText = 'display:flex; gap:10px; margin-bottom:10px;';
-            
             let optionsHTML = accountsData.map(acc => `<option value="${acc.id}">${acc.account_code} - ${acc.account_name}</option>`).join('');
-            
-            newLine.innerHTML = `
-                <select name="account[]" required style="flex:3;"><option value="">Select Account</option>${optionsHTML}</select>
-                <input type="number" name="debit[]" step="0.01" placeholder="Debit" style="flex:1;">
-                <input type="number" name="credit[]" step="0.01" placeholder="Credit" style="flex:1;">`;
+            newLine.innerHTML = `<select name="account[]" required style="flex:3;"><option value="">Select Account</option>${optionsHTML}</select><input type="number" name="debit[]" step="0.01" placeholder="Debit" style="flex:1;"><input type="number" name="credit[]" step="0.01" placeholder="Credit" style="flex:1;">`;
             container.appendChild(newLine);
         }
 
@@ -436,7 +624,7 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                 totalDebit += parseFloat(line.querySelector('[name="debit[]"]').value) || 0;
                 totalCredit += parseFloat(line.querySelector('[name="credit[]"]').value) || 0;
             });
-            document.getElementById('journalTotal').innerHTML = `Total Debit: $${totalDebit.toFixed(2)} | Total Credit: $${totalCredit.toFixed(2)}`;
+            document.getElementById('journalTotal').innerHTML = `Total Debit: ${formatCurrencyJS(totalDebit)} | Total Credit: ${formatCurrencyJS(totalCredit)}`;
             return { totalDebit, totalCredit };
         }
 
@@ -445,7 +633,6 @@ $accounts = getChartOfAccounts($pdo, $school_id);
                 const row = e.target.closest('.journal-line');
                 const debitInput = row.querySelector('[name="debit[]"]');
                 const creditInput = row.querySelector('[name="credit[]"]');
-                // Ensure only one of debit or credit has a value per line
                 if (e.target === debitInput && debitInput.value) creditInput.value = '';
                 else if (e.target === creditInput && creditInput.value) debitInput.value = '';
                 calculateJournalTotals();
@@ -456,90 +643,242 @@ $accounts = getChartOfAccounts($pdo, $school_id);
             e.preventDefault();
             const { totalDebit, totalCredit } = calculateJournalTotals();
             if (Math.abs(totalDebit - totalCredit) > 0.01) {
-                alert('Debit and Credit totals must match.');
-                return;
+                alert('Debit and Credit totals must match.'); return;
             }
             if (totalDebit === 0) {
-                 alert('Journal entry cannot be empty.');
-                return;
+                 alert('Journal entry cannot be empty.'); return;
             }
-            // This function is a generic form submit handler
             submitForm(e, 'journal_entry.php', 'journalForm');
+        }
+        
+        // --- Generic Async Form Submission Handler ---
+        async function submitForm(e, url, formId) {
+            e.preventDefault();
+            const form = document.getElementById(formId);
+            const submitButton = form.querySelector('button[type="submit"]');
+            const originalButtonText = submitButton.innerHTML;
+            
+            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+            submitButton.disabled = true;
+
+            try {
+                const formData = new FormData(form);
+                const response = await fetch(url, { method: 'POST', body: formData });
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('Transaction posted successfully!');
+                    form.reset();
+                    form.querySelectorAll('.receipt-filename').forEach(span => span.textContent = '');
+                    form.querySelectorAll('.uploaded-receipt-path').forEach(input => input.value = '');
+                    if (document.getElementById('ledger').classList.contains('active')) {
+                        fetchLedgerData();
+                    }
+                } else {
+                    alert(`Error: ${result.error || 'An unknown error occurred.'}`);
+                }
+            } catch (error) {
+                console.error('Submission error:', error);
+                alert('A network or server error occurred. Please check the console and try again.');
+            } finally {
+                submitButton.innerHTML = originalButtonText;
+                submitButton.disabled = false;
+            }
+        }
+
+        // --- Receipt Upload Buttons & QR Code Feature ---
+        let qrPollingInterval;
+        let activeQrForm = null;
+
+        document.body.addEventListener('click', function(e) {
+            if (e.target.matches('.receipt-action-btn')) {
+                const fileInput = e.target.closest('.receipt-upload-controls').querySelector('.receipt-file-input');
+                if (!fileInput) return;
+                fileInput.removeAttribute('capture');
+                fileInput.click();
+            }
+        });
+
+        document.body.addEventListener('change', function(e) {
+            if (e.target.matches('.receipt-file-input')) {
+                const form = e.target.closest('form');
+                if (!form) return;
+                const filenameSpan = form.querySelector('.receipt-filename');
+                if (filenameSpan) {
+                    if (e.target.files && e.target.files.length > 0) {
+                        filenameSpan.textContent = e.target.files[0].name;
+                        form.querySelector('.uploaded-receipt-path').value = '';
+                    } else {
+                        filenameSpan.textContent = '';
+                    }
+                }
+            }
+        });
+        
+        async function showQrCode(button) {
+            const modal = document.getElementById('qrModal');
+            const qrImg = document.getElementById('qr-code-img');
+            const qrStatus = document.getElementById('qr-status');
+            activeQrForm = button.closest('form');
+
+            qrImg.src = '';
+            qrStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating QR Code...';
+            modal.style.display = 'flex';
+
+            try {
+                const response = await fetch('generate_qr.php');
+                const data = await response.json();
+                if (data.success) {
+                    qrImg.style.display = 'block';
+                    qrImg.src = data.qr_code;
+                    qrStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Waiting for phone scan...';
+                    startPolling(data.token);
+                } else {
+                    qrImg.style.display = 'none';
+                    qrStatus.innerHTML = `<span style="color:red;">Error: ${data.error || 'Could not generate QR code. Check server logs.'}</span>`;
+                }
+            } catch (error) {
+                qrImg.style.display = 'none';
+                qrStatus.innerHTML = '<span style="color:red;">Error: Could not connect to the server.</span>';
+                console.error(error);
+            }
+        }
+
+        function startPolling(token) {
+            let attempts = 0;
+            const maxAttempts = 100; // Poll for 5 minutes (100 attempts * 3 seconds)
+
+            qrPollingInterval = setInterval(async () => {
+                if (attempts++ > maxAttempts) {
+                    closeQrModal('QR Code expired. Please try again.');
+                    return;
+                }
+                try {
+                    // *** THIS IS THE FIX ***
+                    // Added { credentials: 'same-origin' } to ensure the session cookie is sent.
+                    const response = await fetch(`check_upload_status.php?token=${token}`, { credentials: 'same-origin' });
+                    // *** END OF FIX ***
+                    
+                    if (!response.ok) {
+                        // Handle non-200 responses, like the 401 you were seeing
+                        if (response.status === 401) {
+                             closeQrModal('Authentication error. Please refresh the page and try again.');
+                        }
+                        return; // Stop this attempt if the response was not OK
+                    }
+
+                    const data = await response.json();
+                    if (data.status === 'completed') {
+                        const filenameSpan = activeQrForm.querySelector('.receipt-filename');
+                        const hiddenPathInput = activeQrForm.querySelector('.uploaded-receipt-path');
+                        if (filenameSpan && hiddenPathInput) {
+                            filenameSpan.innerHTML = `<span>${data.filePath.split('/').pop()}</span> <img id="receipt-thumbnail" src="${data.filePath}" alt="Thumbnail">`;
+                            hiddenPathInput.value = data.filePath;
+                            activeQrForm.querySelector('.receipt-file-input').value = ''; 
+                        }
+                        closeQrModal();
+                    } else if (data.status === 'expired') {
+                        closeQrModal('QR Code expired. Please try again.');
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                    closeQrModal('A connection error occurred during polling.');
+                }
+            }, 3000);
+        }
+
+        function closeQrModal(message = null) {
+            if (qrPollingInterval) clearInterval(qrPollingInterval);
+            document.getElementById('qrModal').style.display = 'none';
+            activeQrForm = null;
+            if (message) alert(message);
         }
 
         // --- General Ledger Logic ---
         const filterForm = document.getElementById('ledger-filter-form');
         const tableBody = document.getElementById('ledger-table-body');
+        const totalDebitsSpan = document.getElementById('total-debits');
+        const totalCreditsSpan = document.getElementById('total-credits');
+        const netMovementSpan = document.getElementById('net-movement');
+
+        function formatCurrencyJS(amount) {
+            return currencySymbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+        }
 
         async function fetchLedgerData() {
+            tableBody.innerHTML = '<tr class="loading-row"><td colspan="6"><i class="fas fa-spinner fa-spin"></i> Loading transactions...</td></tr>';
             const formData = new FormData(filterForm);
             const params = new URLSearchParams(formData);
-            
-            tableBody.innerHTML = `<tr class="loading-row"><td colspan="6"><i class="fas fa-spinner fa-spin"></i> Loading transactions...</td></tr>`;
 
             try {
                 const response = await fetch(`expense_transactions.php?${params.toString()}`);
-                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-                
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status}`);
+                }
                 const data = await response.json();
+
                 if (data.success) {
                     renderLedgerTable(data.transactions);
+                    // Update summary
+                    const debits = data.summary.total_debits;
+                    const credits = data.summary.total_credits;
+                    const net = debits - credits;
+
+                    totalDebitsSpan.textContent = formatCurrencyJS(debits);
+                    totalCreditsSpan.textContent = formatCurrencyJS(credits);
+                    netMovementSpan.textContent = formatCurrencyJS(net);
+
+                    if (net >= 0) {
+                        netMovementSpan.classList.add('variance-favorable');
+                        netMovementSpan.classList.remove('variance-unfavorable');
+                    } else {
+                        netMovementSpan.classList.add('variance-unfavorable');
+                        netMovementSpan.classList.remove('variance-favorable');
+                    }
+
                 } else {
-                    tableBody.innerHTML = `<tr><td colspan="6">Error: ${data.error || 'Unknown error'}</td></tr>`;
+                    tableBody.innerHTML = `<tr class="no-results-row"><td colspan="6">Error: ${data.error}</td></tr>`;
                 }
             } catch (error) {
-                console.error('Fetch error:', error);
-                tableBody.innerHTML = `<tr><td colspan="6">Failed to load data. Please check the console for details.</td></tr>`;
+                console.error('Error fetching ledger data:', error);
+                tableBody.innerHTML = `<tr class="no-results-row"><td colspan="6">Failed to load data. Please check the console for errors.</td></tr>`;
             }
         }
 
         function renderLedgerTable(transactions) {
-            tableBody.innerHTML = '';
-            let totalDebits = 0;
-            let totalCredits = 0;
+            tableBody.innerHTML = ''; // Clear previous results or loading indicator
 
-            if (transactions.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px;">No transactions found for the selected criteria.</td></tr>`;
-            } else {
-                transactions.forEach(txn => {
-                    const isDebit = txn.transaction_type === 'debit';
-                    const amount = parseFloat(txn.amount);
-                    const debitAmount = isDebit ? amount : 0;
-                    const creditAmount = !isDebit ? amount : 0;
-
-                    totalDebits += debitAmount;
-                    totalCredits += creditAmount;
-
-                    const row = document.createElement('tr');
-                    row.innerHTML = `
-                        <td>${txn.transaction_date}</td>
-                        <td>${txn.account_code} - ${txn.account_name}</td>
-                        <td>${txn.description || ''}</td>
-                        <td class="amount">${isDebit ? '$' + amount.toFixed(2) : '-'}</td>
-                        <td class="amount">${!isDebit ? '$' + amount.toFixed(2) : '-'}</td>
-                        <td>${txn.receipt_image_url ? `<a href="${txn.receipt_image_url}" target="_blank" class="btn-icon"><i class="fas fa-receipt"></i></a>` : ''}</td>
-                    `;
-                    tableBody.appendChild(row);
-                });
+            if (!transactions || transactions.length === 0) {
+                tableBody.innerHTML = '<tr class="no-results-row"><td colspan="6">No transactions found for the selected criteria.</td></tr>';
+                return;
             }
 
-            // Update summary totals
-            document.getElementById('total-debits').textContent = '$' + totalDebits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            document.getElementById('total-credits').textContent = '$' + totalCredits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            const netMovement = totalDebits - totalCredits;
-            const netMovementEl = document.getElementById('net-movement');
-            netMovementEl.textContent = '$' + netMovement.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            netMovementEl.style.color = netMovement >= 0 ? 'var(--success-dark)' : 'var(--danger-dark)';
+            transactions.forEach(tx => {
+                const row = document.createElement('tr');
+                const debitAmount = tx.transaction_type === 'debit' ? formatCurrencyJS(tx.amount) : '';
+                const creditAmount = tx.transaction_type === 'credit' ? formatCurrencyJS(tx.amount) : '';
+
+                let receiptLink = '';
+                if (tx.receipt_image_url) {
+                    receiptLink = `<a href="${tx.receipt_image_url}" target="_blank" class="btn-icon" title="View Receipt"><i class="fas fa-receipt"></i></a>`;
+                }
+
+                row.innerHTML = `
+                    <td>${tx.transaction_date}</td>
+                    <td>${tx.account_code} - ${tx.account_name}</td>
+                    <td>${tx.description}</td>
+                    <td class="amount">${debitAmount}</td>
+                    <td class="amount">${creditAmount}</td>
+                    <td>${receiptLink}</td>
+                `;
+                tableBody.appendChild(row);
+            });
         }
 
-        filterForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            fetchLedgerData();
-        });
-
-        filterForm.addEventListener('reset', () => {
-            setTimeout(() => fetchLedgerData(), 0);
-        });
+        filterForm.addEventListener('submit', (e) => { e.preventDefault(); fetchLedgerData(); });
+        filterForm.addEventListener('reset', () => { setTimeout(() => fetchLedgerData(), 0); });
+        
     </script>
 </body>
 </html>

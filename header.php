@@ -134,6 +134,7 @@ $pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' 
                     <a href="bulk_actions.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'bulk_actions.php' ? 'active' : ''; ?>">
                         <i class="fas fa-cogs"></i> Bulk Actions
                     </a>
+                    <li><a href="inventory.php"><i class="fas fa-boxes"></i><span>Inventory</span></a></li>
                     <a href="profile.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                         <i class="fas fa-user-cog"></i> My Profile
                     </a>

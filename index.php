@@ -52,6 +52,7 @@ $totalStudents = $summary['total_students'];
 $totalIncome = $summary['total_income'];
 $totalExpenses = $summary['total_expenses'];
 $currentBalance = $summary['current_balance'];
+$outstandingFees = $summary['outstanding_fees']; // Retrieve the new outstanding fees value
 
 // --- Data Fetching for Widgets ---
 
@@ -212,6 +213,11 @@ if ($active_budget) {
             <div class="card-label">Total Expenses</div>
             <div class="card-value">$<?php echo number_format($totalExpenses, 2); ?></div>
             <div class="card-trend negative"><i class="fas fa-calendar-alt"></i> <?php echo $period_label; ?></div>
+        </div>
+        <div class="summary-card outstanding-card">
+            <div class="card-label">Outstanding Fees</div>
+            <div class="card-value">$<?php echo number_format($outstandingFees, 2); ?></div>
+            <div class="card-trend warning"><i class="fas fa-file-invoice-dollar"></i> Total Due From All Invoices</div>
         </div>
          <div class="summary-card student-card">
             <div class="card-label">Active Students</div>
@@ -389,7 +395,7 @@ if ($active_budget) {
 body { background-color: #f4f7f9; }
 .dashboard-container { max-width: 1600px; margin: auto; padding: 20px; }
 .summary-cards {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 20px;
 }
 .summary-card {
     background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: var(--shadow);
@@ -397,12 +403,15 @@ body { background-color: #f4f7f9; }
 }
 .summary-card.income-card { border-color: var(--success); }
 .summary-card.expense-card { border-color: var(--danger); }
+.summary-card.outstanding-card { border-color: var(--warning); }
+.summary-card.student-card { border-color: var(--secondary); }
 .summary-card.balance-card { border-color: var(--primary); }
 .card-label { font-size: 1rem; color: #7f8c8d; margin-bottom: 8px; }
 .card-value { font-size: 2rem; font-weight: 700; color: var(--primary); }
 .card-trend { font-size: 0.8rem; margin-top: 10px; display: flex; align-items: center; gap: 5px;}
 .card-trend.positive { color: var(--success); }
 .card-trend.negative { color: var(--danger); }
+.card-trend.warning { color: var(--warning); }
 .dashboard-main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
 .main-content, .sidebar-content { display: flex; flex-direction: column; gap: 20px; }
 .dashboard-card { background: var(--card-bg); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; }
@@ -433,7 +442,8 @@ body { background-color: #f4f7f9; }
 .empty-state i { font-size: 2.5rem; color: #bdc3c7; margin-bottom: 10px; }
 .empty-state p { font-weight: 600; color: #7f8c8d; }
 @media (max-width: 1200px) { .dashboard-main-grid { grid-template-columns: 1fr; } }
-@media (max-width: 768px) { .summary-cards { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .summary-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 500px) { .summary-cards { grid-template-columns: 1fr; } }
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>

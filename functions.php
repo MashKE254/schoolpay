@@ -34,21 +34,58 @@ function formatPhoneNumberForAT(string $phoneNumber): string
 
     return '';
 }
-/**
- * Records an action in the audit log.
- *
- * @param PDO $pdo The database connection object.
- * @param string $action_type The type of action (CREATE, UPDATE, DELETE).
- * @param string $target_table The database table that was affected.
- * @param int|null $target_id The ID of the record that was affected.
- * @param array $details An associative array containing data about the change.
- * For UPDATE, use ['before' => $old_data, 'after' => $new_data].
- * For CREATE/DELETE, use ['data' => $data].
- * * Formats the JSON details from an audit log entry into readable HTML.
- * @param array $log The audit log row.
- * @return string The formatted HTML.
- */
 
+/**
+ * Sends a bulk SMS message using the Africa's Talking API.
+ *
+ * @param array $recipients An array of phone numbers in international format (e.g., ['+2547...','+2547...']).
+ * @param string $message The text message to be sent.
+ * @return array|string The result from the API or an error message.
+ */
+function sendBulkSms(array $recipients, string $message) {
+    // Check if credentials are defined
+    if (!defined('AT_USERNAME') || !defined('AT_API_KEY') || !defined('AT_SENDER_ID')) {
+        return ['error' => "Africa's Talking API credentials (Username, API Key, or Sender ID) are not defined in config.php"];
+    }
+     if (AT_SENDER_ID === 'MYSCHOOL' || empty(AT_SENDER_ID)) {
+        return ['error' => "Please set your approved Africa's Talking Sender ID in config.php before sending messages."];
+    }
+    
+    // Define options to force the use of TLS version 1.2
+    $curl_options = [
+        'curl' => [
+            CURLOPT_SSLVERSION => CURL_SSLVERSION_TLSv1_2,
+        ],
+    ];
+    
+    try {
+        // Initialize the SDK with your username and API key
+        $AT = new AfricasTalking(AT_USERNAME, AT_API_KEY);
+        
+        // Get the SMS service
+        $sms = $AT->sms();
+
+        // Prepare the options for the API call, now including the Sender ID
+        $options = [
+            'to'      => implode(',', $recipients),
+            'message' => $message,
+            'from'    => AT_SENDER_ID // Explicitly set the Sender ID
+        ];
+
+        // Attempt to send the message
+        $result = $sms->send($options);
+        
+        // THE REDUNDANT BLOCK HAS BEEN REMOVED FROM HERE.
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        // If an error occurs, return the error message for debugging
+        error_log("Africa's Talking API Error: " . $e->getMessage());
+        // Return a generic error format that customer_center.php can handle
+        return ['error' => $e->getMessage()];
+    }
+}
 
  function getUndepositedFundsAccountId(PDO $pdo, int $school_id): int {
     // 1. Try to find the existing account
@@ -81,50 +118,6 @@ function formatPhoneNumberForAT(string $phoneNumber): string
         }
     }
 }
-
-/**
- * Sends a bulk SMS message using the Africa's Talking API.
- *
- * @param array $recipients An array of phone numbers in international format (e.g., ['+2547...','+2547...']).
- * @param string $message The text message to be sent.
- * @return array|string The result from the API or an error message.
- */
-function sendBulkSms(array $recipients, string $message) {
-    // Check if credentials are defined
-    if (!defined('AT_USERNAME') || !defined('AT_API_KEY')) {
-        return ['error' => "Africa's Talking API credentials are not defined in config.php"];
-    }
-    
-    // Define options to force the use of TLS version 1.2
-    $curl_options = [
-        'curl' => [
-            CURLOPT_SSLVERSION => CURL_SSLVERSION_TLSv1_2,
-        ],
-    ];
-    
-    try {
-        // Initialize the SDK with your username, API key, AND the new options
-        $AT = new AfricasTalking(AT_USERNAME, AT_API_KEY, $curl_options);
-        
-        // Get the SMS service
-        $sms = $AT->sms();
-
-        // Prepare the options for the API call
-        $options = [
-            'to'      => implode(',', $recipients),
-            'message' => $message,
-        ];
-
-        // Attempt to send the message
-        return $sms->send($options);
-        
-    } catch (Exception $e) {
-        // If an error occurs, return the error message for debugging
-        error_log("Africa's Talking API Error: " . $e->getMessage());
-        return ['error' => "API Exception: " . $e->getMessage()];
-    }
-}
-
 
 function getAccountsByType(PDO $pdo, int $school_id, string $account_type): array {
     $stmt = $pdo->prepare(
@@ -262,15 +255,29 @@ function getDashboardSummary(PDO $pdo, int $school_id, string $start_date, strin
         $stmt_expenses->execute([$school_id, $start_date, $end_date]);
         $total_expenses = $stmt_expenses->fetchColumn();
 
+        // --- NEW QUERY: Calculate total outstanding fees ---
+        // This is a cumulative total and is not affected by the date range.
+        $stmt_outstanding = $pdo->prepare("SELECT COALESCE(SUM(balance), 0) FROM invoices WHERE school_id = ?");
+        $stmt_outstanding->execute([$school_id]);
+        $outstanding_fees = $stmt_outstanding->fetchColumn();
+
+
         return [
             'total_income' => $total_income,
             'total_expenses' => $total_expenses,
             'current_balance' => $total_income - $total_expenses,
-            'total_students' => $total_students
+            'total_students' => $total_students,
+            'outstanding_fees' => $outstanding_fees // NEW: Add the new value to the return array
         ];
     } catch (PDOException $e) {
         error_log("Error in getDashboardSummary: " . $e->getMessage());
-        return ['total_income' => 0, 'total_expenses' => 0, 'current_balance' => 0, 'total_students' => 0];
+        return [
+            'total_income' => 0, 
+            'total_expenses' => 0, 
+            'current_balance' => 0, 
+            'total_students' => 0,
+            'outstanding_fees' => 0 // NEW: Ensure a default value on error
+        ];
     }
 }
 
@@ -413,9 +420,9 @@ function getInvoiceDetails(PDO $pdo, int $invoice_id, int $school_id): ?array
 {
     $stmt = $pdo->prepare("
         SELECT
-            i.id, i.student_id, i.invoice_number, i.invoice_date, i.due_date, i.total_amount, i.status,
+            i.id, i.school_id, i.student_id, i.invoice_number, i.invoice_date, i.due_date, i.total_amount, i.status, /* THE FIX IS HERE: Added i.school_id */
             s.name as student_name, s.address as student_address,
-            sc.name as school_name, -- Removed all other school columns
+            sc.name as school_name,
             c.name as class_name
         FROM invoices i
         JOIN students s ON i.student_id = s.id
@@ -454,11 +461,14 @@ function createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, 
         // 2. Get the new, school-specific invoice number
         $invoice_number = getInvoiceNumber($pdo, $school_id);
         
+        // 2.5 Generate a secure, unique token for the invoice
+        $token = bin2hex(random_bytes(32));
+
         // 3. Add the invoice_number AND the calculated total_amount to the INSERT statement
         $stmt = $pdo->prepare(
-            "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, notes) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, notes, token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         );
-        $stmt->execute([$school_id, $student_id, $invoice_number, $invoice_date, $due_date, $total_amount, $notes]);
+        $stmt->execute([$school_id, $student_id, $invoice_number, $invoice_date, $due_date, $total_amount, $notes, $token]);
         $invoice_id = $pdo->lastInsertId();
 
         // 4. Insert invoice items
@@ -555,18 +565,23 @@ function createItem($pdo, $school_id, $name, $price, $description = '', $parent_
 }
 
 function getItemsWithSubItems($pdo, $school_id) {
-    $stmt = $pdo->prepare("SELECT * FROM items WHERE school_id = ? AND parent_id IS NULL ORDER BY name");
+    // In the new system, the concept of parent/child items is replaced by the Fee Structure table.
+    // This function's role is now to get a simple, flat list of all base items
+    // to be used in dropdowns, like when creating an invoice manually.
+    // The name is kept for compatibility with pages that still call it.
+    
+    $stmt = $pdo->prepare("SELECT id, name, description FROM items WHERE school_id = ? ORDER BY name");
     $stmt->execute([$school_id]);
-    $parentItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $stmt = $pdo->prepare("SELECT * FROM items WHERE school_id = ? AND parent_id IS NOT NULL ORDER BY name");
-    $stmt->execute([$school_id]);
-    $childItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    foreach ($parentItems as &$parent) {
-        $parent['sub_items'] = array_values(array_filter($childItems, fn($child) => $child['parent_id'] == $parent['id']));
+    $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // To maintain compatibility with the old template structure that expects a 'sub_items' key,
+    // we will format the output similarly but without the hierarchy.
+    foreach ($items as &$item) {
+        $item['price'] = '0.00'; // Price is now managed in fee_structure_items
+        $item['sub_items'] = []; // There are no sub-items anymore
     }
-    return $parentItems;
+
+    return $items;
 }
 
 function updateItem($pdo, $item_id, $name, $price, $description, $parent_id, $item_type, $school_id) {
@@ -594,26 +609,73 @@ function deleteItem(PDO $pdo, int $item_id, int $school_id): bool {
 // =================================================================
 
 /**
- * Calculates Kenyan statutory deductions based on gross pay.
+ * Calculates Kenyan statutory deductions based on gross pay using settings from the database.
  *
+ * @param PDO $pdo The database connection object.
+ * @param int $school_id The ID of the current school.
  * @param float $gross_pay The total gross earnings for the month.
  * @return array An array containing all calculated payroll components.
  */
-function calculate_kenyan_deductions(float $gross_pay): array {
-    $nssf = min($gross_pay * 0.06, 1080); 
-    $taxable_pay = $gross_pay - $nssf;
-    $nhif = 0;
-    if ($gross_pay <= 5999) $nhif = 150; else if ($gross_pay <= 7999) $nhif = 300; else if ($gross_pay <= 11999) $nhif = 400; else if ($gross_pay <= 14999) $nhif = 500; else if ($gross_pay <= 19999) $nhif = 600; else if ($gross_pay <= 24999) $nhif = 750; else if ($gross_pay <= 29999) $nhif = 850; else if ($gross_pay <= 34999) $nhif = 900; else if ($gross_pay <= 39999) $nhif = 950; else if ($gross_pay <= 44999) $nhif = 1000; else if ($gross_pay <= 49999) $nhif = 1100; else if ($gross_pay <= 59999) $nhif = 1200; else if ($gross_pay <= 69999) $nhif = 1300; else if ($gross_pay <= 79999) $nhif = 1400; else if ($gross_pay <= 89999) $nhif = 1500; else if ($gross_pay <= 99999) $nhif = 1600; else $nhif = 1700;
-    $paye = 0; $annual_taxable_pay = $taxable_pay * 12;
-    if ($annual_taxable_pay <= 288000) { $paye = ($annual_taxable_pay * 0.10); } elseif ($annual_taxable_pay <= 388000) { $paye = 28800 + (($annual_taxable_pay - 288000) * 0.25); } else { $paye = 28800 + 25000 + (($annual_taxable_pay - 388000) * 0.30); }
-    $monthly_paye = $paye / 12;
-    $personal_relief = 2400; $insurance_relief = $nhif * 0.15; $final_paye = max(0, $monthly_paye - ($personal_relief + $insurance_relief));
-    $housing_levy = $gross_pay * 0.015;
-    $total_deductions = $final_paye + $nhif + $nssf + $housing_levy;
-    $net_pay = $gross_pay - $total_deductions;
+function calculate_kenyan_deductions(PDO $pdo, int $school_id, float $gross_pay): array {
+    // 1. Fetch all payroll settings for the school at once
+    $stmt_settings = $pdo->prepare("SELECT setting_key, setting_value FROM payroll_settings WHERE school_id = ?");
+    $stmt_settings->execute([$school_id]);
+    $settings_raw = $stmt_settings->fetchAll(PDO::FETCH_KEY_PAIR);
 
-    return ['gross_pay' => round($gross_pay, 2), 'paye' => round($final_paye, 2), 'nhif' => round($nhif, 2), 'nssf' => round($nssf, 2), 'housing_levy' => round($housing_levy, 2), 'total_deductions' => round($total_deductions, 2), 'net_pay' => round($net_pay, 2)];
+    // Prepare a settings array with defaults in case some are missing
+    $settings = [
+        'nssf_rate' => (float)($settings_raw['nssf_rate'] ?? 0.06),
+        'nssf_cap' => (float)($settings_raw['nssf_cap'] ?? 1080),
+        'housing_levy_rate' => (float)($settings_raw['housing_levy_rate'] ?? 0.015),
+        'personal_relief' => (float)($settings_raw['personal_relief'] ?? 2400),
+        'insurance_relief_rate' => (float)($settings_raw['insurance_relief_rate'] ?? 0.15),
+        'nhif_brackets' => json_decode($settings_raw['nhif_brackets'] ?? '[]', true),
+        'paye_brackets' => json_decode($settings_raw['paye_brackets'] ?? '[]', true),
+    ];
+
+    // 2. NSSF Calculation
+    $nssf = min($gross_pay * $settings['nssf_rate'], $settings['nssf_cap']);
+    $taxable_pay = $gross_pay - $nssf;
+
+    // 3. NHIF Calculation (from JSON brackets)
+    $nhif = 0;
+    foreach ($settings['nhif_brackets'] as $bracket) {
+        if ($bracket['max_gross'] === "Infinity" || $gross_pay <= $bracket['max_gross']) {
+            $nhif = $bracket['deduction'];
+            break;
+        }
+    }
+
+    // 4. PAYE Calculation (from JSON brackets)
+    $paye = 0;
+    $annual_taxable_pay = $taxable_pay * 12;
+
+    foreach ($settings['paye_brackets'] as $bracket) {
+        if ($bracket['max_annual'] === "Infinity" || $annual_taxable_pay <= $bracket['max_annual']) {
+            $paye = $bracket['base_tax'] + (($annual_taxable_pay - $bracket['prev_max']) * $bracket['rate']);
+            break;
+        }
+    }
+    
+    $monthly_paye = $paye / 12;
+    $insurance_relief = $nhif * $settings['insurance_relief_rate'];
+    $final_paye = max(0, $monthly_paye - ($settings['personal_relief'] + $insurance_relief));
+
+    // 5. Housing Levy Calculation
+    $housing_levy = $gross_pay * $settings['housing_levy_rate'];
+
+    // 6. Total Deductions
+    $total_deductions_statutory = $final_paye + $nhif + $nssf + $housing_levy;
+
+    return [
+        'paye' => round($final_paye, 2),
+        'nhif' => round($nhif, 2),
+        'nssf' => round($nssf, 2),
+        'housing_levy' => round($housing_levy, 2),
+        'total_deductions' => round($total_deductions_statutory, 2)
+    ];
 }
+
 
 function getPayrollRecords(PDO $pdo, $school_id): array {
     $stmt = $pdo->prepare("SELECT p.*, e.department, e.position FROM payroll p LEFT JOIN employees e ON p.employee_id = e.id WHERE p.school_id = ? ORDER BY p.pay_date DESC");
@@ -627,10 +689,255 @@ function getEmployees(PDO $pdo, int $school_id): array {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+// *** NEW FUNCTION ***
+function getPayrollDashboardMetrics(PDO $pdo, int $school_id): array {
+    $current_month_period = date('Y-m');
+
+    $stmt_active = $pdo->prepare("SELECT COUNT(*) FROM employees WHERE school_id = ? AND status = 'active'");
+    $stmt_active->execute([$school_id]);
+    $active_employees = $stmt_active->fetchColumn();
+
+    $stmt_payroll = $pdo->prepare("
+        SELECT 
+            COUNT(id) as payrolls_run,
+            COALESCE(SUM(net_pay), 0) as total_paid,
+            COALESCE(SUM(total_deductions), 0) as total_deductions
+        FROM payroll 
+        WHERE school_id = ? AND pay_period = ?
+    ");
+    $stmt_payroll->execute([$school_id, $current_month_period]);
+    $payroll_data = $stmt_payroll->fetch(PDO::FETCH_ASSOC);
+
+    return [
+        'active_employees' => $active_employees,
+        'payrolls_run_this_month' => $payroll_data['payrolls_run'],
+        'total_paid_this_month' => $payroll_data['total_paid'],
+        'total_deductions_this_month' => $payroll_data['total_deductions']
+    ];
+}
+
 
 // =================================================================
 // REPORTING FUNCTIONS
 // =================================================================
+
+function generateCustomReport(PDO $pdo, int $school_id, array $options): array
+{
+    $report_type = $options['report_type'] ?? '';
+    $selected_columns = $options['columns'] ?? [];
+    if (empty($report_type) || empty($selected_columns)) {
+        return ['headers' => [], 'data' => []];
+    }
+
+    // --- Whitelists for Security ---
+    $allowed_columns = [
+        'payments' => ['r.receipt_number', 's.name', 'p.payment_date', 'p.amount', 'p.payment_method', 'c.name'],
+        'invoices' => ['i.invoice_number', 's.name', 'i.invoice_date', 'i.due_date', 'i.total_amount', 'i.paid_amount', 'i.balance', 'i.status', 'c.name'],
+        'expenses' => ['a.account_name', 'e.transaction_date', 'e.description', 'e.amount', 'e.payment_method'],
+        'students' => ['s.student_id_no', 's.name', 'c.name', 's.status', 's.phone', 's.email'],
+    ];
+
+    $column_map = [
+        'payments' => ['r.receipt_number' => 'Receipt #', 's.name' => 'Student', 'p.payment_date' => 'Date', 'p.amount' => 'Amount', 'p.payment_method' => 'Method', 'c.name' => 'Class'],
+        'invoices' => ['i.invoice_number' => 'Invoice #', 's.name' => 'Student', 'i.invoice_date' => 'Date', 'i.due_date' => 'Due Date', 'i.total_amount' => 'Total', 'i.paid_amount' => 'Paid', 'i.balance' => 'Balance', 'i.status' => 'Status', 'c.name' => 'Class'],
+        'expenses' => ['a.account_name' => 'Account', 'e.transaction_date' => 'Date', 'e.description' => 'Description', 'e.amount' => 'Amount', 'e.payment_method' => 'Method'],
+        'students' => ['s.student_id_no' => 'Student ID', 's.name' => 'Name', 'c.name' => 'Class', 's.status' => 'Status', 's.phone' => 'Phone', 's.email' => 'Email'],
+    ];
+
+    // --- Build Query ---
+    $query = "";
+    $params = [':school_id' => $school_id];
+    $headers = [];
+
+    // 1. Validate and build SELECT clause
+    $select_clause = [];
+    foreach ($selected_columns as $col) {
+        if (in_array($col, $allowed_columns[$report_type])) {
+            // *** THE FIX: Use an alias to prevent column name collisions ***
+            $alias = str_replace('.', '_', $col);
+            $select_clause[] = "$col AS $alias"; 
+            $headers[] = $column_map[$report_type][$col];
+        }
+    }
+    if (empty($select_clause)) throw new Exception("No valid columns selected.");
+    
+    $query .= "SELECT " . implode(', ', $select_clause);
+
+    // 2. Build FROM and JOIN clauses
+    switch ($report_type) {
+        case 'payments':
+            $query .= " FROM payments p 
+                        JOIN students s ON p.student_id = s.id 
+                        LEFT JOIN classes c ON s.class_id = c.id
+                        LEFT JOIN payment_receipts r ON p.receipt_id = r.id";
+            break;
+        case 'invoices':
+            $query .= " FROM invoices i
+                        JOIN students s ON i.student_id = s.id
+                        LEFT JOIN classes c ON s.class_id = c.id";
+            break;
+        case 'expenses':
+            $query .= " FROM expenses e
+                        JOIN accounts a ON e.account_id = a.id";
+            break;
+        case 'students':
+            $query .= " FROM students s
+                        LEFT JOIN classes c ON s.class_id = c.id";
+            break;
+    }
+
+    // 3. Build WHERE clause
+    $where_conditions = [];
+    switch ($report_type) {
+        case 'payments': $where_conditions[] = "p.school_id = :school_id"; break;
+        case 'invoices': $where_conditions[] = "i.school_id = :school_id"; break;
+        case 'expenses': $where_conditions[] = "e.school_id = :school_id AND a.account_type = 'expense'"; break;
+        case 'students': $where_conditions[] = "s.school_id = :school_id"; break;
+    }
+    
+    // Date filter
+    if (!empty($options['start_date']) && !empty($options['end_date'])) {
+        $date_field = '';
+        if ($report_type === 'payments') $date_field = 'p.payment_date';
+        if ($report_type === 'invoices') $date_field = 'i.invoice_date';
+        if ($report_type === 'expenses') $date_field = 'e.transaction_date';
+        
+        if ($date_field) {
+            $where_conditions[] = "$date_field BETWEEN :start_date AND :end_date";
+            $params[':start_date'] = $options['start_date'];
+            $params[':end_date'] = $options['end_date'];
+        }
+    }
+
+    // Other filters
+    if (!empty($options['student_id'])) {
+        $where_conditions[] = "s.id = :student_id";
+        $params[':student_id'] = $options['student_id'];
+    }
+    if (!empty($options['class_id'])) {
+        $where_conditions[] = "c.id = :class_id";
+        $params[':class_id'] = $options['class_id'];
+    }
+    if (!empty($options['status'])) {
+        $status_field = ($report_type === 'students') ? 's.status' : 'i.status';
+        if ($options['status'] === 'Unpaid'){
+             $where_conditions[] = "$status_field IN ('Draft', 'Sent', 'Overdue', 'Partially Paid')";
+        } else {
+            $where_conditions[] = "$status_field = :status";
+            $params[':status'] = $options['status'];
+        }
+    }
+
+    if (!empty($where_conditions)) {
+        $query .= " WHERE " . implode(' AND ', $where_conditions);
+    }
+    
+    // 4. Build ORDER BY clause
+    $sort_by = $options['sort_by'] ?? '';
+    if (!empty($sort_by) && in_array($sort_by, $allowed_columns[$report_type])) {
+        $sort_order = ($options['sort_order'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
+        $query .= " ORDER BY $sort_by $sort_order";
+    }
+
+    // 5. Execute and return
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    return ['headers' => $headers, 'data' => $data];
+}
+
+
+// These are other reporting functions used by the standard reports.
+function getArAgingData(PDO $pdo, int $school_id) {
+    // This is a consolidated function to fetch AR Aging data
+    $arAgingData = [];
+    $arStmt = $pdo->prepare("
+        SELECT s.name as student_name, (i.total_amount - i.paid_amount) as balance, i.due_date
+        FROM invoices i
+        JOIN students s ON i.student_id = s.id
+        WHERE i.school_id = ? AND (i.total_amount - i.paid_amount) > 0.01
+    ");
+    $arStmt->execute([$school_id]);
+    
+    $today = new DateTime();
+    $today->setTime(0, 0, 0);
+
+    while ($row = $arStmt->fetch(PDO::FETCH_ASSOC)) {
+        $dueDate = new DateTime($row['due_date']);
+        $dueDate->setTime(0, 0, 0);
+        $studentName = $row['student_name'];
+        if (!isset($arAgingData[$studentName])) {
+            $arAgingData[$studentName] = ['current' => 0, '30' => 0, '60' => 0, '90' => 0, 'older' => 0, 'total' => 0];
+        }
+
+        if ($dueDate >= $today) {
+            $arAgingData[$studentName]['current'] += $row['balance'];
+        } else {
+            $daysOverdue = $today->diff($dueDate)->days;
+            if ($daysOverdue <= 30) $arAgingData[$studentName]['30'] += $row['balance'];
+            elseif ($daysOverdue <= 60) $arAgingData[$studentName]['60'] += $row['balance'];
+            elseif ($daysOverdue <= 90) $arAgingData[$studentName]['90'] += $row['balance'];
+            else $arAgingData[$studentName]['older'] += $row['balance'];
+        }
+        $arAgingData[$studentName]['total'] += $row['balance'];
+    }
+    return $arAgingData;
+}
+
+function getStudentBalanceReport(PDO $pdo, int $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT s.name, s.phone, c.name as class_name, SUM(i.total_amount - i.paid_amount) as total_balance
+        FROM students s
+        LEFT JOIN invoices i ON s.id = i.student_id
+        LEFT JOIN classes c ON s.class_id = c.id
+        WHERE s.school_id = ? AND i.school_id = ?
+        GROUP BY s.id, s.name, s.phone, c.name
+        HAVING total_balance > 0.01
+        ORDER BY total_balance DESC
+    ");
+    $stmt->execute([$school_id, $school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getPayrollSummary(PDO $pdo, int $school_id, string $payPeriod) {
+    $stmt = $pdo->prepare("
+        SELECT COUNT(id) as employee_count, COALESCE(SUM(gross_pay), 0) as total_gross,
+               COALESCE(SUM(total_deductions), 0) as total_deductions, COALESCE(SUM(net_pay), 0) as total_net
+        FROM payroll WHERE school_id = ? AND pay_period = ?
+    ");
+    $stmt->execute([$school_id, $payPeriod]);
+    return $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+function getStatutoryDeductionsReport(PDO $pdo, int $school_id, string $payPeriod) {
+    // *** THIS IS THE FIX ***
+    // The query now selects the correct, new column names.
+    $stmt = $pdo->prepare("SELECT employee_name, paye, nhif, nssf, housing_levy FROM payroll WHERE school_id = ? AND pay_period = ?");
+    $stmt->execute([$school_id, $payPeriod]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+
+function getPaymentPromisesReport(PDO $pdo, int $school_id) {
+    $stmt = $pdo->prepare("
+        SELECT pp.*, s.name as student_name FROM payment_promises pp
+        JOIN students s ON pp.student_id = s.id
+        WHERE pp.school_id = ? AND pp.status IN ('Pending', 'Broken') ORDER BY pp.promised_due_date ASC
+    ");
+    $stmt->execute([$school_id]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getDepositSummary(PDO $pdo, int $school_id, string $start_date, string $end_date) {
+    $stmt = $pdo->prepare("
+        SELECT d.deposit_date, d.amount, d.memo, a.account_name FROM deposits d
+        JOIN accounts a ON d.account_id = a.id
+        WHERE d.school_id = ? AND d.deposit_date BETWEEN ? AND ? ORDER BY d.deposit_date DESC
+    ");
+    $stmt->execute([$school_id, $start_date, $end_date]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
 function getProfitLossData($pdo, $startDate, $endDate, $school_id) {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE payment_date BETWEEN ? AND ? AND school_id = ?");
@@ -744,18 +1051,20 @@ function getOpenInvoicesReport($pdo, $school_id) {
 }
 
 function getIncomeByCategory($pdo, $startDate, $endDate, $school_id) {
+    // NEW, CORRECTED FUNCTION for the updated database schema.
+    // This query directly joins invoice_items with the simple 'items' table
+    // and groups by the item's name to categorize income.
     $stmt = $pdo->prepare("
         SELECT
-            COALESCE(p.name, i.name) AS category_name,
+            i.name AS category_name,
             SUM(ii.quantity) AS total_quantity,
             SUM(ii.quantity * ii.unit_price) AS total_income,
             AVG(ii.unit_price) AS average_price
         FROM invoice_items ii
         JOIN invoices inv ON ii.invoice_id = inv.id
         JOIN items i ON ii.item_id = i.id
-        LEFT JOIN items p ON i.parent_id = p.id
         WHERE inv.invoice_date BETWEEN ? AND ? AND ii.school_id = ?
-        GROUP BY category_name
+        GROUP BY i.id, i.name
         ORDER BY total_income DESC
     ");
     $stmt->execute([$startDate, $endDate, $school_id]);
@@ -1178,4 +1487,159 @@ function getNewStudentsForPeriod(PDO $pdo, int $school_id, string $start_date, s
     $stmt->execute([$school_id, $start_date . ' 00:00:00', $end_date . ' 23:59:59']);
     return (int)$stmt->fetchColumn();
 }
-?>
+
+/**
+ * Calculates the current financial balance for a single student.
+ *
+ * @param PDO $pdo The database connection object.
+ * @param int $student_id The ID of the student.
+ * @param int $school_id The ID of the school.
+ * @return float The calculated balance (invoiced - paid).
+ */
+function getStudentBalance(PDO $pdo, int $student_id, int $school_id): float {
+    $stmt = $pdo->prepare("
+        SELECT 
+            COALESCE(SUM(total_amount), 0) as totalInvoiced,
+            COALESCE(SUM(paid_amount), 0) as totalPaid
+        FROM invoices 
+        WHERE student_id = ? AND school_id = ?
+    ");
+    $stmt->execute([$student_id, $school_id]);
+    $summary = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$summary) {
+        return 0.0;
+    }
+
+    return (float)($summary['totalInvoiced'] - $summary['totalPaid']);
+}
+
+function updateInventoryStockLevel(PDO $pdo, int $school_id, int $item_id, int $quantity_changed, string $movement_type, ?float $new_cost = null, array $options = []) {
+    // 1. Fetch current item details
+    $stmt_item = $pdo->prepare("SELECT quantity_on_hand, average_cost, unit_price FROM inventory_items WHERE id = ? AND school_id = ? FOR UPDATE");
+    $stmt_item->execute([$item_id, $school_id]);
+    $item = $stmt_item->fetch(PDO::FETCH_ASSOC);
+
+    if (!$item) {
+        throw new Exception("Inventory item not found.");
+    }
+
+    $current_qty = (int)$item['quantity_on_hand'];
+    $current_avg_cost = (float)$item['average_cost'];
+    
+    // 2. Check for sufficient stock for reductions
+    if ($quantity_changed < 0 && ($current_qty + $quantity_changed < 0)) {
+        throw new Exception("Insufficient stock for this operation.");
+    }
+    
+    $new_qty = $current_qty + $quantity_changed;
+    $new_avg_cost = $current_avg_cost;
+
+    // 3. Recalculate average cost for stock additions (purchases)
+    if ($movement_type === 'purchase' && $quantity_changed > 0 && $new_cost !== null) {
+        $total_value_before = $current_qty * $current_avg_cost;
+        $value_of_addition = $quantity_changed * $new_cost;
+        if ($new_qty > 0) {
+            $new_avg_cost = ($total_value_before + $value_of_addition) / $new_qty;
+        } else {
+            $new_avg_cost = $new_cost;
+        }
+    }
+    
+    // 4. Update the inventory item record
+    $stmt_update = $pdo->prepare("UPDATE inventory_items SET quantity_on_hand = ?, average_cost = ? WHERE id = ? AND school_id = ?");
+    $stmt_update->execute([$new_qty, $new_avg_cost, $item_id, $school_id]);
+    
+    // 5. Log the movement
+    $stmt_log = $pdo->prepare(
+        "INSERT INTO inventory_movements (school_id, item_id, user_id, movement_type, quantity_changed, cost_at_time, price_at_time, related_entity_type, related_entity_id, notes, transaction_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    $stmt_log->execute([
+        $school_id,
+        $item_id,
+        $_SESSION['user_id'],
+        $movement_type,
+        $quantity_changed,
+        ($movement_type === 'purchase') ? $new_cost : $current_avg_cost, // Use new cost for purchase, avg cost for others
+        ($movement_type === 'issuance') ? (float)$item['unit_price'] : null, // Record selling price only on issuance
+        $options['entity_type'] ?? null,
+        $options['entity_id'] ?? null,
+        $options['notes'] ?? null,
+        $options['date'] ?? date('Y-m-d H:i:s')
+    ]);
+    
+    log_audit($pdo, 'UPDATE', 'inventory_items', $item_id, ['data' => [
+        'movement_type' => $movement_type,
+        'quantity_changed' => $quantity_changed,
+        'new_quantity_on_hand' => $new_qty
+    ]]);
+}
+
+/**
+ * Ensures that essential inventory-related accounts exist in the Chart of Accounts.
+ *
+ * @param PDO $pdo The database connection object.
+ * @param int $school_id The ID of the school.
+ * @return array An associative array of the required account IDs.
+ */
+function getInventoryAccountIDs(PDO $pdo, int $school_id): array {
+    return [
+        'asset' => getOrCreateAccount($pdo, $school_id, 'Inventory Asset', 'asset', '1300'),
+        'cogs' => getOrCreateAccount($pdo, $school_id, 'Cost of Goods Sold', 'expense', '5000'),
+        'sales' => getOrCreateAccount($pdo, $school_id, 'Inventory Sales', 'revenue', '4100')
+    ];
+}
+
+function createInvoiceFromUniformOrder(PDO $pdo, int $school_id, int $order_id): int {
+    // 1. Fetch the order and its items
+    $stmt_order = $pdo->prepare("SELECT * FROM uniform_orders WHERE id = ? AND school_id = ?");
+    $stmt_order->execute([$order_id, $school_id]);
+    $order = $stmt_order->fetch(PDO::FETCH_ASSOC);
+
+    if (!$order) {
+        throw new Exception("Uniform order not found.");
+    }
+    
+    $stmt_items = $pdo->prepare("
+        SELECT uoi.quantity, uoi.unit_price, i.id as item_id, i.name, uoi.size
+        FROM uniform_order_items uoi
+        JOIN inventory_items i ON uoi.item_id = i.id
+        WHERE uoi.order_id = ?
+    ");
+    $stmt_items->execute([$order_id]);
+    $order_items = $stmt_items->fetchAll(PDO::FETCH_ASSOC);
+    
+    if (empty($order_items)) {
+        throw new Exception("Cannot create an invoice for an empty order.");
+    }
+
+    // 2. Format items for the createInvoice function
+    $invoice_items = [];
+    $invoice_notes = "Uniform order #{$order_id}.\nItems:\n";
+    foreach ($order_items as $item) {
+        $invoice_items[] = [
+            'item_id' => $item['item_id'],
+            'quantity' => $item['quantity'],
+            'unit_price' => $item['unit_price']
+        ];
+        $invoice_notes .= "- " . $item['name'] . " (Size: " . $item['size'] . ") x " . $item['quantity'] . "\n";
+    }
+
+    // 3. Use the existing createInvoice function
+    $invoice_id = createInvoice(
+        $pdo,
+        $school_id,
+        $order['student_id'],
+        $order['order_date'], // Use order date as invoice date
+        $order['due_date'] ?? date('Y-m-d', strtotime('+30 days')),
+        $invoice_items,
+        $invoice_notes
+    );
+
+    // 4. Link the new invoice back to the uniform order
+    $stmt_link = $pdo->prepare("UPDATE uniform_orders SET invoice_id = ? WHERE id = ?");
+    $stmt_link->execute([$invoice_id, $order_id]);
+
+    return $invoice_id;
+}
