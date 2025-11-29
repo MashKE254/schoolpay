@@ -1,6 +1,6 @@
 <?php
 /**
- * customer_center.php - v5.2 - Professional Grade School Finance Hub
+ * customer_center.php - v5.4 - Professional Grade School Finance Hub
  *
  * This comprehensive page manages all customer-facing aspects of the school's finances.
  * All form processing logic is handled at the top of the script before any HTML output
@@ -8,7 +8,7 @@
  *
  * Features:
  * - Student Management: CRUD, status changes, bulk actions, and a detailed split-view.
- * - Class Management: Create/edit classes and define the promotion path for automation. Now includes drag-and-drop reordering.
+ * - Class Management: Create/edit classes, define promotion paths, promote individual or all classes with automated invoicing. Includes drag-and-drop reordering.
  * - Fee Structure Management: Assign mandatory or optional fee items with specific prices to classes for a given academic term. Includes bulk CSV upload for both base items and fee structures.
  * - Invoice Template Management: Create/edit templates and link them to classes for auto-invoicing.
  * - Payment Processing: Payments default to an "Undeposited Funds" account.
@@ -261,6 +261,135 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['success_message'] = "Bulk invoices for " . count($students_in_class) . " students generated successfully.";
             } else {
                 $_SESSION['error_message'] = "Missing required information for bulk invoice generation.";
+            }
+        }
+        elseif (isset($_POST['promote_class'])) {
+            $active_tab = 'classes';
+            $class_id_to_promote = intval($_POST['class_id_to_promote']);
+            $new_academic_year = trim($_POST['new_academic_year']);
+            $new_term = trim($_POST['new_term']);
+            $new_due_date = trim($_POST['new_due_date']);
+
+            if (empty($class_id_to_promote) || empty($new_academic_year) || empty($new_term) || empty($new_due_date)) {
+                throw new Exception("All fields are required for promotion.");
+            }
+
+            // Find the destination class
+            $stmt_next_class = $pdo->prepare("SELECT next_class_id FROM classes WHERE id = ? AND school_id = ?");
+            $stmt_next_class->execute([$class_id_to_promote, $school_id]);
+            $next_class_id = $stmt_next_class->fetchColumn();
+
+            if (empty($next_class_id)) {
+                throw new Exception("The selected class does not have a 'Next Class' promotion path defined. Please set it first.");
+            }
+
+            // Get all active students in the class to be promoted
+            $stmt_students = $pdo->prepare("SELECT id, name FROM students WHERE class_id = ? AND school_id = ? AND status = 'active'");
+            $stmt_students->execute([$class_id_to_promote, $school_id]);
+            $students_to_promote = $stmt_students->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (empty($students_to_promote)) {
+                throw new Exception("There are no active students in the selected class to promote.");
+            }
+
+            $promoted_count = 0;
+            $errors = [];
+
+            // The main loop
+            foreach ($students_to_promote as $student) {
+                try {
+                    promoteStudentAndCreateInvoice(
+                        $pdo,
+                        $school_id,
+                        $student['id'],
+                        $next_class_id,
+                        $new_academic_year,
+                        $new_term,
+                        $new_due_date
+                    );
+                    $promoted_count++;
+                } catch (Exception $e) {
+                    $errors[] = "Could not promote student " . $student['name'] . ": " . $e->getMessage();
+                }
+            }
+
+            if (!empty($errors)) {
+                 $_SESSION['warning_message'] = "Promotion completed with some errors. Successfully promoted: {$promoted_count}. Errors: " . implode('; ', $errors);
+            } else {
+                 $_SESSION['success_message'] = "Successfully promoted and invoiced {$promoted_count} students.";
+            }
+        }
+        elseif (isset($_POST['promote_all_classes'])) {
+            $active_tab = 'classes';
+            $new_academic_year = trim($_POST['new_academic_year']);
+            $new_term = trim($_POST['new_term']);
+            $new_due_date = trim($_POST['new_due_date']);
+
+            if (empty($new_academic_year) || empty($new_term) || empty($new_due_date)) {
+                throw new Exception("Academic Year, Term, and Due Date are required to promote all classes.");
+            }
+
+            // Fetch all non-archived classes that have a promotion path defined.
+            // CRITICAL: Order by display_order DESC to promote higher classes first (e.g., Grade 2->3 before Grade 1->2).
+            $stmt_classes = $pdo->prepare(
+                "SELECT id, name, next_class_id FROM classes 
+                 WHERE school_id = ? AND is_archived = 0 AND next_class_id IS NOT NULL 
+                 ORDER BY display_order DESC"
+            );
+            $stmt_classes->execute([$school_id]);
+            $classes_to_promote = $stmt_classes->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($classes_to_promote)) {
+                throw new Exception("No classes with a defined promotion path were found.");
+            }
+
+            $total_promoted_count = 0;
+            $class_summary = [];
+            $errors = [];
+
+            // Outer loop: Iterate through each class
+            foreach ($classes_to_promote as $class) {
+                $class_id_to_promote = $class['id'];
+                $next_class_id = $class['next_class_id'];
+                
+                // Get all active students in the current class
+                $stmt_students = $pdo->prepare("SELECT id, name FROM students WHERE class_id = ? AND school_id = ? AND status = 'active'");
+                $stmt_students->execute([$class_id_to_promote, $school_id]);
+                $students_to_promote = $stmt_students->fetchAll(PDO::FETCH_ASSOC);
+
+                if (empty($students_to_promote)) {
+                    continue; // Skip empty classes
+                }
+
+                $class_promoted_count = 0;
+                // Inner loop: Promote each student in the class
+                foreach ($students_to_promote as $student) {
+                    try {
+                        promoteStudentAndCreateInvoice(
+                            $pdo,
+                            $school_id,
+                            $student['id'],
+                            $next_class_id,
+                            $new_academic_year,
+                            $new_term,
+                            $new_due_date
+                        );
+                        $class_promoted_count++;
+                    } catch (Exception $e) {
+                        $errors[] = "Could not promote student " . $student['name'] . " from class " . $class['name'] . ": " . $e->getMessage();
+                    }
+                }
+                
+                if ($class_promoted_count > 0) {
+                    $total_promoted_count += $class_promoted_count;
+                    $class_summary[] = "{$class_promoted_count} student(s) from " . htmlspecialchars($class['name']);
+                }
+            }
+
+            if (!empty($errors)) {
+                 $_SESSION['warning_message'] = "Promotion completed with some errors. Total successfully promoted: {$total_promoted_count}. Errors: " . implode('; ', $errors);
+            } else {
+                 $_SESSION['success_message'] = "Successfully promoted {$total_promoted_count} students across " . count($class_summary) . " classes. (" . implode(', ', $class_summary) . ").";
             }
         }
 
@@ -746,7 +875,6 @@ $message_templates = [
                                 <td class="drag-handle text-center"><i class="fas fa-grip-vertical"></i></td>
                                 <td>
                                     <input type="text" name="class_name[<?= $class['id'] ?>]" value="<?= htmlspecialchars($class['name']) ?>" class="form-control">
-                                    <!-- Hidden input to store the order -->
                                     <input type="hidden" name="class_order[<?= $class['id'] ?>]" value="<?= $order_index++ ?>">
                                 </td>
                                 <td>
@@ -784,6 +912,77 @@ $message_templates = [
                 <input type="hidden" name="add_class" value="1">
                 <div class="form-group"><label for="class_name">New Class Name</label><input type="text" name="class_name" id="class_name" class="form-control" required></div>
                 <div class="form-actions"><button type="submit" class="btn-success">Add Class</button></div>
+            </form>
+
+            <hr style="margin: 2rem 0;">
+            <h4>Promote Class & Create New Invoices</h4>
+            <p>This will move all <strong>active</strong> students from a selected class to their designated "Next Class" and generate new invoices for the upcoming term. The new invoice will be based on each student's previous invoice, but with mandatory fees updated according to the new class's fee structure.</p>
+            <div class="alert alert-warning"><strong>Warning:</strong> This action is irreversible. Please confirm the fee structure for the destination class is correctly set up for the new academic period before proceeding.</div>
+            
+            <form action="customer_center.php" method="POST" onsubmit="return confirm('Are you absolutely sure you want to promote this entire class and generate new invoices?');">
+                <input type="hidden" name="active_tab" value="classes">
+                <input type="hidden" name="promote_class" value="1">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="class_id_to_promote">Class to Promote</label>
+                        <select name="class_id_to_promote" id="class_id_to_promote" class="form-control" required>
+                            <option value="">-- Select Class --</option>
+                            <?php foreach ($all_classes_for_dropdown as $class): ?>
+                                <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="new_academic_year">New Academic Year</label>
+                        <input type="text" name="new_academic_year" id="new_academic_year" class="form-control" value="<?= date('Y') . '-' . (date('Y') + 1) ?>" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new_term">New Term</label>
+                        <select name="new_term" id="new_term" class="form-control" required>
+                            <option>Term 1</option>
+                            <option>Term 2</option>
+                            <option>Term 3</option>
+                        </select>
+                    </div>
+                     <div class="form-group">
+                        <label for="new_due_date">New Invoices Due Date</label>
+                        <input type="date" name="new_due_date" id="new_due_date" class="form-control" required value="<?= date('Y-m-d', strtotime('+30 days')) ?>">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary"><i class="fas fa-graduation-cap"></i> Promote Class</button>
+                </div>
+            </form>
+
+            <hr style="margin: 2rem 0;">
+            <h4><i class="fas fa-rocket"></i> Promote All Classes at Once</h4>
+            <p>Use this powerful tool at the end of a term to advance all students in all classes to their next designated class simultaneously. This will also generate new invoices for every promoted student.</p>
+            <div class="alert alert-danger"><strong>EXTREME WARNING:</strong> This action will affect your entire student roster and cannot be undone. Please double-check that all promotion paths and the new term's fee structures are correct before proceeding. It is highly recommended to perform a database backup before using this feature.</div>
+            
+            <form action="customer_center.php" method="POST" onsubmit="return confirm('ARE YOU ABSOLUTELY SURE?\n\nThis will promote ALL students in every class with a defined promotion path and generate new invoices for them. This action is irreversible.');">
+                <input type="hidden" name="active_tab" value="classes">
+                <input type="hidden" name="promote_all_classes" value="1">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="all_new_academic_year">New Academic Year</label>
+                        <input type="text" name="new_academic_year" id="all_new_academic_year" class="form-control" value="<?= date('Y') . '-' . (date('Y') + 1) ?>" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="all_new_term">New Term</label>
+                        <select name="new_term" id="all_new_term" class="form-control" required>
+                            <option>Term 1</option>
+                            <option>Term 2</option>
+                            <option>Term 3</option>
+                        </select>
+                    </div>
+                     <div class="form-group">
+                        <label for="all_new_due_date">New Invoices Due Date</label>
+                        <input type="date" name="new_due_date" id="all_new_due_date" class="form-control" required value="<?= date('Y-m-d', strtotime('+30 days')) ?>">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-danger btn-lg"><i class="fas fa-exclamation-triangle"></i> Promote ALL Classes</button>
+                </div>
             </form>
 
             <hr style="margin: 2rem 0;">
@@ -1116,7 +1315,6 @@ $message_templates = [
                     </select>
                 </div>
 
-                <!-- New Date Range Selector for Statements -->
                 <div id="statement-date-range-container" class="form-grid" style="display: none; margin-top: 1rem; gap: 1rem;">
                     <div class="form-group">
                         <label for="statement_link_date_from">Statement From</label>
@@ -1151,19 +1349,16 @@ $message_templates = [
     </div>
 </div>
 
-<!-- All Modals -->
 <div id="addStudentModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Add New Student</h3><span class="close" onclick="closeModal('addStudentModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="students"><input type="hidden" name="addStudent" value="1"><div class="modal-body"><div class="form-group"><label>Full Name</label><input type="text" name="name" required class="form-control"></div><div class="form-group"><label>Email</label><input type="email" name="email" class="form-control"></div><div class="form-group"><label>Phone</label><input type="text" name="phone" class="form-control"></div><div class="form-group"><label>Address</label><textarea name="address" rows="2" class="form-control"></textarea></div><div class="form-group"><label>Student ID No.</label><input type="text" name="student_id_no" class="form-control"></div><div class="form-group"><label for="add_student_class_id">Class</label><select name="class_id" id="add_student_class_id" class="form-control class-select"><option value="">Select Class</option><?php foreach ($all_classes_for_dropdown as $class): ?><option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option><?php endforeach; ?></select></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('addStudentModal')">Cancel</button><button type="submit" class="btn-primary">Add Student</button></div></form></div></div>
 <div id="editStudentModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Edit Student</h3><span class="close" onclick="closeModal('editStudentModal')">&times;</span></div><form id="editStudentForm" method="post"><input type="hidden" name="active_tab" value="students"><input type="hidden" name="editStudent" value="1"><input type="hidden" name="student_id" id="edit_student_id"><div class="modal-body"><div class="form-group"><label>Full Name</label><input type="text" name="name" id="edit_name" required class="form-control"></div><div class="form-group"><label>Email</label><input type="email" name="email" id="edit_email" class="form-control"></div><div class="form-group"><label>Phone</label><input type="text" name="phone" id="edit_phone" class="form-control"></div><div class="form-group"><label>Address</label><textarea name="address" id="edit_address" rows="2" class="form-control"></textarea></div><div class="form-group"><label>Student ID No.</label><input type="text" name="student_id_no" id="edit_student_id_no" class="form-control"></div><div class="form-group"><label>Status</label><select name="status" id="edit_status" class="form-control"><option value="active">Active</option><option value="inactive">Inactive</option></select></div><div class="form-group"><label for="edit_class_id">Class</label><select name="class_id" id="edit_class_id" class="form-control class-select"><option value="">Select Class</option><?php foreach ($all_classes_for_dropdown as $class): ?><option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option><?php endforeach; ?></select></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editStudentModal')">Cancel</button><button type="submit" class="btn-primary">Update Student</button></div></form></div></div>
 <div id="viewReceiptModal" class="modal"><div class="modal-content" style="max-width: 500px;"><div class="modal-header"><h3>Receipt Details</h3><span class="close" onclick="closeModal('viewReceiptModal')">&times;</span></div><div class="modal-body" id="receipt-details-body"><p>Loading...</p></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('viewReceiptModal')">Close</button><button type="button" class="btn-primary" onclick="printReceipt()">Print Receipt</button></div></div></div>
 <div id="editTemplateModal" class="modal"><div class="modal-content" style="max-width: 900px;"><div class="modal-header"><h3>Edit Invoice Template</h3><span class="close" onclick="closeModal('editTemplateModal')">&times;</span></div><form id="editTemplateForm" method="post" onsubmit="prepareTemplateUpdate()"><input type="hidden" name="active_tab" value="templates"><input type="hidden" name="update_template" value="1"><input type="hidden" name="template_id" id="edit_template_id"><input type="hidden" name="template_items_json" id="edit_template_items_json"><div class="modal-body"><div class="form-group"><label for="edit_template_name">Template Name</label><input type="text" id="edit_template_name" name="template_name" class="form-control" required></div><div class="form-group"><label for="edit_template_class_id">Link to Class</label><select name="class_id" id="edit_template_class_id" class="form-control"><option value="">-- No Link --</option><?php foreach ($all_classes_for_dropdown as $class): ?><option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option><?php endforeach; ?></select></div><h4>Template Items</h4><table class="items-table"><thead><tr><th style="width: 40%;">Item</th><th style="width: 15%;">Qty</th><th style="width: 20%;">Rate</th><th style="width: 20%; text-align: right;">Amount</th><th></th></tr></thead><tbody id="edit-template-items-container"></tbody></table><button type="button" class="btn-secondary btn-add-item" onclick="addTemplateItem()">+ Add line</button></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editTemplateModal')">Cancel</button><button type="submit" class="btn-primary">Update Template</button></div></form></div></div>
 <div id="addPromiseModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Record a Payment Promise</h3><span class="close" onclick="closeModal('addPromiseModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="students"><input type="hidden" name="add_promise" value="1"><input type="hidden" name="promise_student_id" id="promise_student_id"><input type="hidden" name="promise_invoice_id" id="promise_invoice_id"><div class="modal-body"><p>For Invoice #<strong id="promise_invoice_id_display"></strong></p><div class="form-group"><label for="promised_amount">Promised Amount</label><input type="number" name="promised_amount" id="promised_amount" step="0.01" required class="form-control"></div><div class="form-group"><label for="promised_due_date">Promised Payment Date</label><input type="date" name="promised_due_date" id="promised_due_date" required class="form-control"></div><div class="form-group"><label for="promise_date">Date of Promise</label><input type="date" name="promise_date" id="promise_date" value="<?= date('Y-m-d') ?>" required class="form-control"></div><div class="form-group"><label for="notes">Notes</label><textarea name="notes" id="notes" rows="3" class="form-control" placeholder="e.g., Spoke with parent on the phone."></textarea></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('addPromiseModal')">Cancel</button><button type="submit" class="btn-primary">Save Promise</button></div></form></div></div>
 
-<!-- NEW MODALS FOR FEE STRUCTURE -->
 <div id="assignFeeItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Assign Fee Item to Class(es)</h3><span class="close" onclick="closeModal('assignFeeItemModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="assign_fee_item" value="1"><input type="hidden" name="academic_year" value="<?= htmlspecialchars($current_academic_year) ?>"><input type="hidden" name="term" value="<?= htmlspecialchars($current_term) ?>"><div class="modal-body"><div class="form-grid"><div class="form-group"><label>Academic Year</label><input type="text" value="<?= htmlspecialchars($current_academic_year) ?>" class="form-control" readonly></div><div class="form-group"><label>Term</label><input type="text" value="<?= htmlspecialchars($current_term) ?>" class="form-control" readonly></div></div><div class="form-group"><label for="assign_item_id">Fee Item</label><select name="item_id" id="assign_item_id" required class="form-control"><option value="">-- Select Base Item --</option><?php foreach($base_items as $item): ?><option value="<?= $item['id'] ?>"><?= htmlspecialchars($item['name']) ?></option><?php endforeach; ?></select></div><div class="form-group"><label for="assign_amount">Amount</label><input type="number" name="amount" id="assign_amount" step="0.01" required class="form-control"></div><div class="form-group"><label for="assign_class_ids">Assign to Classes</label><div class="class-checkbox-group"><?php foreach($all_classes_for_dropdown as $class): ?><label><input type="checkbox" name="class_ids[]" value="<?= $class['id'] ?>"> <?= htmlspecialchars($class['name']) ?></label><?php endforeach; ?></div></div><div class="form-group"><label><input type="checkbox" name="is_mandatory" value="1" checked> This fee is mandatory</label></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('assignFeeItemModal')">Cancel</button><button type="submit" class="btn-primary">Assign to Class(es)</button></div></form></div></div>
 <div id="editFeeItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Edit Assigned Fee</h3><span class="close" onclick="closeModal('editFeeItemModal')">&times;</span></div><form id="editFeeForm" method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="update_fee_item" value="1"><input type="hidden" name="fee_id" id="edit_fee_id"><div class="modal-body"><p><strong>Class:</strong> <span id="edit_fee_class_name"></span></p><p><strong>Item:</strong> <span id="edit_fee_item_name"></span></p><div class="form-group"><label for="edit_fee_amount">Amount</label><input type="number" name="amount" id="edit_fee_amount" step="0.01" required class="form-control"></div><div class="form-group"><label><input type="checkbox" name="is_mandatory" id="edit_fee_is_mandatory" value="1"> This fee is mandatory</label></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editFeeItemModal')">Cancel</button><button type="submit" class="btn-primary">Update Fee</button></div></form></div></div>
 <div id="createBaseItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Create New Base Item</h3><span class="close" onclick="closeModal('createBaseItemModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="create_base_item" value="1"><div class="modal-body"><p>Create a generic fee item (e.g., "Tuition Fee", "Transport - Zone C"). You can assign prices to it for different classes later.</p><div class="form-group"><label for="item_name">Item Name</label><input type="text" name="item_name" id="item_name" required class="form-control"></div><div class="form-group"><label for="item_description">Description</label><textarea name="item_description" id="item_description" rows="2" class="form-control"></textarea></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('createBaseItemModal')">Cancel</button><button type="submit" class="btn-primary">Create Item</button></div></form></div></div>
 
-<!-- MODAL FOR SENDING A SINGLE MESSAGE -->
 <div id="sendMessageModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
@@ -1201,7 +1396,6 @@ $message_templates = [
     </div>
 </div>
 
-<!-- CDN for SortableJS Library -->
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 
 <?php include 'footer.php'; ?>
@@ -1507,4 +1701,3 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 </script>
-

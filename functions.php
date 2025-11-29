@@ -449,53 +449,52 @@ function getInvoiceDetails(PDO $pdo, int $invoice_id, int $school_id): ?array
     return $invoice;
 }
 function createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, $items, $notes = '') {
-    try {
-        $pdo->beginTransaction();
-
-        // 1. Calculate the total amount from the items array.
-        $total_amount = 0;
-        foreach ($items as $item) {
-            $total_amount += ($item['quantity'] ?? 1) * ($item['unit_price'] ?? 0);
-        }
-
-        // 2. Get the new, school-specific invoice number
-        $invoice_number = getInvoiceNumber($pdo, $school_id);
-        
-        // 2.5 Generate a secure, unique token for the invoice
-        $token = bin2hex(random_bytes(32));
-
-        // 3. Add the invoice_number AND the calculated total_amount to the INSERT statement
-        $stmt = $pdo->prepare(
-            "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, notes, token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        );
-        $stmt->execute([$school_id, $student_id, $invoice_number, $invoice_date, $due_date, $total_amount, $notes, $token]);
-        $invoice_id = $pdo->lastInsertId();
-
-        // 4. Insert invoice items
-        $stmt_items = $pdo->prepare("INSERT INTO invoice_items (school_id, invoice_id, item_id, quantity, unit_price) VALUES (?, ?, ?, ?, ?)");
-        foreach ($items as $item) {
-            $stmt_items->execute([$school_id, $invoice_id, $item['item_id'], $item['quantity'], $item['unit_price']]);
-        }
-
-        // 5. The Accounting Logic (Journal Entry) - This is the critical new part.
-        if ($total_amount > 0) {
-            // Get or create the necessary accounts
-            $accounts_receivable_id = getOrCreateAccount($pdo, $school_id, 'Accounts Receivable', 'asset', '1200');
-            $tuition_revenue_id = getOrCreateAccount($pdo, $school_id, 'Tuition Revenue', 'revenue', '4000');
-            
-            // Create a description for the journal entry
-            $description = "Invoice #{$invoice_number} created for student ID {$student_id}.";
-            
-            // Debit Accounts Receivable (asset increases), Credit Tuition Revenue (revenue increases)
-            create_journal_entry($pdo, $school_id, $invoice_date, $description, $total_amount, $accounts_receivable_id, $tuition_revenue_id);
-        }
-        
-        $pdo->commit();
-        return $invoice_id;
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        throw $e;
+    // NOTE: Transaction handling has been removed from this function. 
+    // It should be called from within an existing transaction.
+    
+    // 1. Calculate the total amount from the items array.
+    $total_amount = 0;
+    foreach ($items as $item) {
+        $total_amount += ($item['quantity'] ?? 1) * ($item['unit_price'] ?? 0);
     }
+
+    // 2. Get the new, school-specific invoice number
+    $invoice_number = getInvoiceNumber($pdo, $school_id);
+    
+    // 2.5 Generate a secure, unique token for the invoice
+    $token = bin2hex(random_bytes(32));
+
+    // 3. Add the invoice_number AND the calculated total_amount to the INSERT statement
+    $stmt = $pdo->prepare(
+        "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, notes, token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    $stmt->execute([$school_id, $student_id, $invoice_number, $invoice_date, $due_date, $total_amount, $notes, $token]);
+    $invoice_id = $pdo->lastInsertId();
+    
+    if (!$invoice_id) {
+        throw new Exception("Database failed to create the invoice record for student ID {$student_id}.");
+    }
+
+    // 4. Insert invoice items
+    $stmt_items = $pdo->prepare("INSERT INTO invoice_items (school_id, invoice_id, item_id, quantity, unit_price) VALUES (?, ?, ?, ?, ?)");
+    foreach ($items as $item) {
+        $stmt_items->execute([$school_id, $invoice_id, $item['item_id'], $item['quantity'], $item['unit_price']]);
+    }
+
+    // 5. The Accounting Logic (Journal Entry)
+    if ($total_amount > 0) {
+        // Get or create the necessary accounts
+        $accounts_receivable_id = getOrCreateAccount($pdo, $school_id, 'Accounts Receivable', 'asset', '1200');
+        $tuition_revenue_id = getOrCreateAccount($pdo, $school_id, 'Tuition Revenue', 'revenue', '4000');
+        
+        // Create a description for the journal entry
+        $description = "Invoice #{$invoice_number} created for student ID {$student_id}.";
+        
+        // Debit Accounts Receivable (asset increases), Credit Tuition Revenue (revenue increases)
+        create_journal_entry($pdo, $school_id, $invoice_date, $description, $total_amount, $accounts_receivable_id, $tuition_revenue_id);
+    }
+    
+    return $invoice_id; // Return the new invoice ID
 }
 
 function getUnpaidInvoices($pdo, $student_id, $school_id) {
@@ -1071,6 +1070,42 @@ function getIncomeByCategory($pdo, $startDate, $endDate, $school_id) {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+/**
+ * Generates a report of income grouped by item and then by class.
+ *
+ * @param PDO    $pdo        The database connection object.
+ * @param int    $school_id  The ID of the current school.
+ * @param string $start_date The start date for the report period.
+ * @param string $end_date   The end date for the report period.
+ * @return array             An array of income data.
+ */
+function getIncomeByItemAndClass(PDO $pdo, int $school_id, string $start_date, string $end_date): array {
+    $stmt = $pdo->prepare("
+        SELECT
+            i.name AS item_name,
+            c.name AS class_name,
+            SUM(ii.quantity * ii.unit_price) AS total_income
+        FROM invoice_items ii
+        JOIN invoices inv ON ii.invoice_id = inv.id
+        JOIN items i ON ii.item_id = i.id
+        JOIN students s ON inv.student_id = s.id
+        LEFT JOIN classes c ON s.class_id = c.id
+        WHERE
+            ii.school_id = :school_id
+            AND inv.invoice_date BETWEEN :start_date AND :end_date
+        GROUP BY
+            c.name, i.name
+        ORDER BY
+            c.name ASC, total_income DESC
+    ");
+    $stmt->execute([
+        ':school_id' => $school_id,
+        ':start_date' => $start_date,
+        ':end_date' => $end_date
+    ]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 
 function getSubcategories($pdo, $categoryId, $startDate, $endDate, $school_id) {
     $stmt = $pdo->prepare("
@@ -1290,7 +1325,7 @@ function getInvoiceTemplates(PDO $pdo, int $school_id): array {
 }
 function format_currency($amount, $symbol = null) {
     if ($symbol === null) {
-        $symbol = $_SESSION['currency_symbol'] ?? '$';
+        $symbol = $_SESSION['currency_symbol'] ?? 'Ksh';
     }
     
     $formatted_amount = number_format((float)$amount, 2);
@@ -1643,3 +1678,108 @@ function createInvoiceFromUniformOrder(PDO $pdo, int $school_id, int $order_id):
 
     return $invoice_id;
 }
+
+function promoteStudentAndCreateInvoice(PDO $pdo, int $school_id, int $student_id, int $new_class_id, string $new_academic_year, string $term, string $due_date): int {
+    // Initialize the item list for the new invoice
+    $new_invoice_items = [];
+    
+    // --- Step 1: Promote the student to the new class ---
+    $stmt_promote = $pdo->prepare("UPDATE students SET class_id = ? WHERE id = ? AND school_id = ?");
+    $stmt_promote->execute([$new_class_id, $student_id, $school_id]);
+
+    // --- Step 2: Get all MANDATORY fee items for the NEW class for the specified term ---
+    $stmt_new_fees = $pdo->prepare(
+        "SELECT fsi.item_id, i.name as item_name, fsi.amount
+         FROM fee_structure_items fsi
+         JOIN items i ON fsi.item_id = i.id
+         WHERE fsi.class_id = ? AND fsi.academic_year = ? AND fsi.term = ? AND fsi.is_mandatory = 1 AND fsi.school_id = ?"
+    );
+    $stmt_new_fees->execute([$new_class_id, $new_academic_year, $term, $school_id]);
+    $new_mandatory_fees = $stmt_new_fees->fetchAll(PDO::FETCH_ASSOC);
+
+    // Add these new mandatory fees to our new invoice item list
+    $new_mandatory_item_ids = array_column($new_mandatory_fees, 'item_id');
+    foreach ($new_mandatory_fees as $fee) {
+        $new_invoice_items[] = [
+            'item_id' => $fee['item_id'],
+            'description' => $fee['item_name'],
+            'quantity' => 1,
+            'unit_price' => $fee['amount']
+        ];
+    }
+
+    // --- Step 3: Find the last invoice and carry over its OPTIONAL items ---
+    $stmt_last_invoice = $pdo->prepare("SELECT id FROM invoices WHERE student_id = ? AND school_id = ? ORDER BY id DESC LIMIT 1");
+    $stmt_last_invoice->execute([$student_id, $school_id]);
+    $last_invoice_id = $stmt_last_invoice->fetchColumn();
+
+    if ($last_invoice_id) {
+        // Get all items from the last invoice
+        $stmt_old_items = $pdo->prepare(
+            "SELECT ii.item_id, ii.quantity, ii.unit_price, i.name as item_name, i.description
+             FROM invoice_items ii
+             JOIN items i ON ii.item_id = i.id
+             WHERE ii.invoice_id = ? AND ii.school_id = ?"
+        );
+        $stmt_old_items->execute([$last_invoice_id, $school_id]);
+        $old_invoice_items = $stmt_old_items->fetchAll(PDO::FETCH_ASSOC);
+
+        // Get the list of all mandatory items in the system to filter them out
+        $stmt_all_mandatory = $pdo->prepare("SELECT DISTINCT item_id FROM fee_structure_items WHERE school_id = ? AND is_mandatory = 1");
+        $stmt_all_mandatory->execute([$school_id]);
+        $all_mandatory_ids = $stmt_all_mandatory->fetchAll(PDO::FETCH_COLUMN);
+        
+        // Also fetch the 'Balance Brought Forward' item ID to ensure we don't copy it
+        $balance_bf_item_id = $pdo->query("SELECT id FROM items WHERE name = 'Balance Brought Forward' AND school_id = $school_id")->fetchColumn();
+
+        foreach ($old_invoice_items as $old_item) {
+            // Carry over an item if it's NOT a mandatory fee for any class (i.e., it's a truly optional item like skating, transport, etc.)
+            // AND it's not the "Balance Brought Forward" item itself.
+            $is_optional = !in_array($old_item['item_id'], $all_mandatory_ids);
+            $is_balance_bf = ($old_item['item_id'] == $balance_bf_item_id);
+
+            if ($is_optional && !$is_balance_bf) {
+                 $new_invoice_items[] = [
+                    'item_id' => $old_item['item_id'],
+                    'description' => $old_item['description'] ?: $old_item['item_name'], // Use description if available, else name
+                    'quantity' => $old_item['quantity'],
+                    'unit_price' => $old_item['unit_price']
+                ];
+            }
+        }
+    }
+
+    // --- Step 4: Create the new invoice with the final, combined item list ---
+    $invoice_notes = "New invoice generated after promotion for the {$new_academic_year} {$term} term.";
+    $new_invoice_id = createInvoice($pdo, $school_id, $student_id, date('Y-m-d'), $due_date, $new_invoice_items, $invoice_notes);
+    
+    if(!$new_invoice_id) {
+        throw new Exception("Failed to create a new invoice for student ID {$student_id}.");
+    }
+
+    return $new_invoice_id;
+}
+
+function getOrCreateSystemItem(PDO $pdo, int $school_id, string $item_name): int {
+    $stmt = $pdo->prepare("SELECT id FROM items WHERE school_id = ? AND name = ?");
+    $stmt->execute([$school_id, $item_name]);
+    $item_id = $stmt->fetchColumn();
+
+    if ($item_id) {
+        return (int)$item_id;
+    } else {
+        // Item doesn't exist, so create it
+        $stmt_create = $pdo->prepare(
+            "INSERT INTO items (school_id, name, description) VALUES (?, ?, ?)"
+        );
+        $stmt_create->execute([$school_id, $item_name, 'An automatically generated item to carry over outstanding balances.']);
+        $new_item_id = $pdo->lastInsertId();
+        if ($new_item_id) {
+            log_audit($pdo, 'CREATE', 'items', $new_item_id, ['data' => ['name' => $item_name, 'note' => 'Auto-created system item.']]);
+            return (int)$new_item_id;
+        } else {
+            throw new Exception("Could not create the required '{$item_name}' item in the database.");
+        }
+    }
+}
+?>

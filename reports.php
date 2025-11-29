@@ -1,10 +1,10 @@
 <?php
 /**
- * reports.php - v5.2 - Multi-Tenant Reports Page with Custom Report Builder
+ * reports.php - v5.3 - Multi-Tenant Reports Page with Custom Report Builder
  *
  * This page provides a comprehensive overview of the school's financial health
  * through a series of standard reports and a powerful custom report generator.
- * This version corrects the statutory deductions report to use the new payroll schema.
+ * This version adds the "Income by Item" report.
  */
 
 // --- BLOCK 1: SETUP & PRE-PROCESSING ---
@@ -56,6 +56,18 @@ $arAgingData = getArAgingData($pdo, $school_id);
 $studentBalances = getStudentBalanceReport($pdo, $school_id);
 $payrollSummary = getPayrollSummary($pdo, $school_id, $payPeriod);
 $statutoryData = getStatutoryDeductionsReport($pdo, $school_id, $payPeriod);
+
+// --- NEW: Data Fetching & Processing for Income by Item Report ---
+$incomeByItemDataRaw = getIncomeByItemAndClass($pdo, $school_id, $startDate, $endDate);
+$incomeByItemAndClass = [];
+foreach ($incomeByItemDataRaw as $row) {
+    $className = $row['class_name'] ?? 'Unassigned / No Class';
+    $incomeByItemAndClass[$className][] = [
+        'item_name' => $row['item_name'],
+        'total_income' => $row['total_income']
+    ];
+}
+// --- END NEW ---
 
 // *** THIS IS THE FIX: Calculate totals using the new column names ***
 $statutoryTotals = [
@@ -114,6 +126,7 @@ foreach ($arAgingData as $data) {
         <button class="tab-link" onclick="openTab(event, 'plReport')"><i class="fas fa-chart-line"></i> P&L</button>
         <button class="tab-link" onclick="openTab(event, 'balanceSheet')"><i class="fas fa-balance-scale"></i> Balance Sheet</button>
         <button class="tab-link" onclick="openTab(event, 'arAging')"><i class="fas fa-clock"></i> A/R Aging</button>
+        <button class="tab-link" onclick="openTab(event, 'incomeByItem')"><i class="fas fa-tags"></i> Income by Item</button>
         <button class="tab-link" onclick="openTab(event, 'studentBalances')"><i class="fas fa-user-graduate"></i> Student Balances</button>
         <button class="tab-link" onclick="openTab(event, 'payrollReports')"><i class="fas fa-money-check-alt"></i> Payroll</button>
         <button class="tab-link" onclick="openTab(event, 'depositSummary')"><i class="fas fa-university"></i> Deposits</button>
@@ -180,6 +193,61 @@ foreach ($arAgingData as $data) {
         </div>
     </div>
 
+    <div id="incomeByItem" class="tab-content">
+        <div class="card">
+            <h3>Income by Item & Class</h3>
+            <p>This report shows total invoiced amounts, grouped by class and then by individual fee items within the selected date range.</p>
+            <form method="GET" class="filter-controls">
+                <input type="hidden" name="tab" value="incomeByItem">
+                <div class="form-group">
+                    <label for="ibiDateFrom">From:</label>
+                    <input type="date" id="ibiDateFrom" name="start_date" value="<?= htmlspecialchars($startDate) ?>">
+                </div>
+                <div class="form-group">
+                    <label for="ibiDateTo">To:</label>
+                    <input type="date" id="ibiDateTo" name="end_date" value="<?= htmlspecialchars($endDate) ?>">
+                </div>
+                <button type="submit" class="btn-primary">Apply Filter</button>
+            </form>
+
+            <?php if (empty($incomeByItemAndClass)): ?>
+                <div class="alert alert-info">No income data found for the selected period.</div>
+            <?php else: ?>
+                <?php foreach ($incomeByItemAndClass as $className => $items): ?>
+                    <h4 style="margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 5px;"><?= htmlspecialchars($className) ?></h4>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item Name</th>
+                                    <th class="amount-header">Total Invoiced Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                $classTotal = 0;
+                                foreach ($items as $item):
+                                    $classTotal += $item['total_income'];
+                                ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($item['item_name']) ?></td>
+                                        <td class="amount"><?= format_currency($item['total_income'], $_SESSION['currency_symbol'] ?? 'Ksh') ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                            <tfoot>
+                                <tr class="total-row">
+                                    <td><strong>Total for <?= htmlspecialchars($className) ?></strong></td>
+                                    <td class="amount"><strong><?= format_currency($classTotal, $_SESSION['currency_symbol'] ?? 'Ksh') ?></strong></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+
     <div id="studentBalances" class="tab-content">
         <div class="card">
             <h3>Student Balance Report</h3>
@@ -209,14 +277,12 @@ foreach ($arAgingData as $data) {
             </div>
             <h4 style="margin-top: 2rem;">Statutory Deductions Report for <?= date('F Y', strtotime($payPeriod . '-01')) ?></h4>
             <div class="table-container">
-                 <!-- *** THIS IS THE FIX: Updated table headers and data cells *** -->
-                <table>
+                 <table>
                     <thead><tr><th>Employee Name</th><th class="amount-header">PAYE</th><th class="amount-header">NHIF</th><th class="amount-header">NSSF</th><th class="amount-header">Housing Levy</th></tr></thead>
                     <tbody><?php foreach($statutoryData as $row): ?><tr><td><?= htmlspecialchars($row['employee_name']) ?></td><td class="amount">$<?= number_format($row['paye'], 2) ?></td><td class="amount">$<?= number_format($row['nhif'], 2) ?></td><td class="amount">$<?= number_format($row['nssf'], 2) ?></td><td class="amount">$<?= number_format($row['housing_levy'], 2) ?></td></tr><?php endforeach; ?></tbody>
                     <tfoot><tr class="total-row"><td><strong>TOTALS</strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['paye'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['nhif'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['nssf'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['housing_levy'], 2) ?></strong></td></tr></tfoot>
                 </table>
-                 <!-- *** END OF FIX *** -->
-            </div>
+                 </div>
         </div>
     </div>
     
