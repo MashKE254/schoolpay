@@ -133,15 +133,15 @@ foreach ($arAgingData as $data) {
             <div class="pl-statement">
                 <div class="pl-section">
                     <div class="pl-header">Revenue</div>
-                    <?php foreach($plData['revenue']['accounts'] as $account): ?><div class="pl-line-item"><span class="account-name"><?= htmlspecialchars($account['account_name']) ?></span><span class="amount">$<?= number_format($account['total'], 2) ?></span></div><?php endforeach; ?>
-                    <div class="pl-total-line"><span>Total Revenue</span><span class="amount">$<?= number_format($plData['revenue']['total'], 2) ?></span></div>
+                    <?php foreach($plData['revenue']['accounts'] as $account): ?><div class="pl-line-item"><span class="account-name"><?= htmlspecialchars($account['account_name']) ?></span><span class="amount"><?= format_currency($account['total']) ?></span></div><?php endforeach; ?>
+                    <div class="pl-total-line"><span>Total Revenue</span><span class="amount"><?= format_currency($plData['revenue']['total']) ?></span></div>
                 </div>
                 <div class="pl-section">
                     <div class="pl-header">Expenses</div>
-                    <?php foreach($plData['expense']['accounts'] as $account): ?><div class="pl-line-item"><span class="account-name"><?= htmlspecialchars($account['account_name']) ?></span><span class="amount">$<?= number_format($account['total'], 2) ?></span></div><?php endforeach; ?>
-                    <div class="pl-total-line"><span>Total Expenses</span><span class="amount">$<?= number_format($plData['expense']['total'], 2) ?></span></div>
+                    <?php foreach($plData['expense']['accounts'] as $account): ?><div class="pl-line-item"><span class="account-name"><?= htmlspecialchars($account['account_name']) ?></span><span class="amount"><?= format_currency($account['total']) ?></span></div><?php endforeach; ?>
+                    <div class="pl-total-line"><span>Total Expenses</span><span class="amount"><?= format_currency($plData['expense']['total']) ?></span></div>
                 </div>
-                <div class="pl-net-income <?= $plData['net_income'] < 0 ? 'loss' : '' ?>"><span>Net Income</span><span class="amount">$<?= number_format($plData['net_income'], 2) ?></span></div>
+                <div class="pl-net-income <?= $plData['net_income'] < 0 ? 'loss' : '' ?>"><span>Net Income</span><span class="amount"><?= format_currency($plData['net_income']) ?></span></div>
             </div>
         </div>
     </div>
@@ -151,19 +151,19 @@ foreach ($arAgingData as $data) {
             <h3>Balance Sheet</h3>
             <div class="report-period">As of: <?= date('F d, Y') ?></div>
             <div class="balance-section"><h4>Assets</h4><table><tbody>
-                <?php foreach($balanceSheetData['assets'] as $asset): ?><tr><td><?= htmlspecialchars($asset['account_name']) ?></td><td class="amount">$<?= number_format($asset['balance'], 2) ?></td></tr><?php endforeach; ?>
-                <tr class="total"><td>Total Assets</td><td class="amount">$<?= number_format($balanceSheetData['total_assets'], 2) ?></td></tr>
+                <?php foreach($balanceSheetData['assets'] as $asset): ?><tr><td><?= htmlspecialchars($asset['account_name']) ?></td><td class="amount"><?= format_currency($asset['balance']) ?></td></tr><?php endforeach; ?>
+                <tr class="total"><td>Total Assets</td><td class="amount"><?= format_currency($balanceSheetData['total_assets']) ?></td></tr>
             </tbody></table></div>
             <div class="balance-section"><h4>Liabilities</h4><table><tbody>
-                <?php foreach($balanceSheetData['liabilities'] as $liability): ?><tr><td><?= htmlspecialchars($liability['account_name']) ?></td><td class="amount">$<?= number_format($liability['balance'], 2) ?></td></tr><?php endforeach; ?>
-                <tr class="total"><td>Total Liabilities</td><td class="amount">$<?= number_format($balanceSheetData['total_liabilities'], 2) ?></td></tr>
+                <?php foreach($balanceSheetData['liabilities'] as $liability): ?><tr><td><?= htmlspecialchars($liability['account_name']) ?></td><td class="amount"><?= format_currency($liability['balance']) ?></td></tr><?php endforeach; ?>
+                <tr class="total"><td>Total Liabilities</td><td class="amount"><?= format_currency($balanceSheetData['total_liabilities']) ?></td></tr>
             </tbody></table></div>
             <div class="balance-section"><h4>Equity</h4><table><tbody>
-                <?php foreach($balanceSheetData['equity'] as $equity): ?><tr><td><?= htmlspecialchars($equity['account_name']) ?></td><td class="amount">$<?= number_format($equity['balance'], 2) ?></td></tr><?php endforeach; ?>
-                <tr><td>Retained Earnings</td><td class="amount">$<?= number_format($balanceSheetData['retained_earnings'], 2) ?></td></tr>
-                <tr class="total"><td>Total Equity</td><td class="amount">$<?= number_format($balanceSheetData['total_equity'], 2) ?></td></tr>
+                <?php foreach($balanceSheetData['equity'] as $equity): ?><tr><td><?= htmlspecialchars($equity['account_name']) ?></td><td class="amount"><?= format_currency($equity['balance']) ?></td></tr><?php endforeach; ?>
+                <tr><td>Retained Earnings</td><td class="amount"><?= format_currency($balanceSheetData['retained_earnings']) ?></td></tr>
+                <tr class="total"><td>Total Equity</td><td class="amount"><?= format_currency($balanceSheetData['total_equity']) ?></td></tr>
             </tbody></table></div>
-            <div class="balance-total"><table><tbody><tr><td>Total Liabilities + Equity</td><td class="amount">$<?= number_format($balanceSheetData['total_liabilities_equity'], 2) ?></td></tr></tbody></table></div>
+            <div class="balance-total"><table><tbody><tr><td>Total Liabilities + Equity</td><td class="amount"><?= format_currency($balanceSheetData['total_liabilities_equity']) ?></td></tr></tbody></table></div>
         </div>
     </div>
   
@@ -173,8 +173,8 @@ foreach ($arAgingData as $data) {
             <div class="table-container">
                 <table>
                     <thead><tr><th>Student</th><th class="amount-header">Current</th><th class="amount-header">1-30 Days</th><th class="amount-header">31-60 Days</th><th class="amount-header">61-90 Days</th><th class="amount-header">90+ Days</th><th class="amount-header">Total Due</th></tr></thead>
-                    <tbody><?php foreach($arAgingData as $student => $data): ?><tr><td><?= htmlspecialchars($student) ?></td><td class="amount">$<?= number_format($data['current'], 2) ?></td><td class="amount">$<?= number_format($data['30'], 2) ?></td><td class="amount">$<?= number_format($data['60'], 2) ?></td><td class="amount">$<?= number_format($data['90'], 2) ?></td><td class="amount">$<?= number_format($data['older'], 2) ?></td><td class="amount"><strong>$<?= number_format($data['total'], 2) ?></strong></td></tr><?php endforeach; ?></tbody>
-                    <tfoot><tr class="total-row"><td><strong>TOTAL</strong></td><td class="amount"><strong>$<?= number_format($arTotals['current'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($arTotals['30'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($arTotals['60'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($arTotals['90'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($arTotals['older'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($arTotals['total'], 2) ?></strong></td></tr></tfoot>
+                    <tbody><?php foreach($arAgingData as $student => $data): ?><tr><td><?= htmlspecialchars($student) ?></td><td class="amount"><?= format_currency($data['current']) ?></td><td class="amount"><?= format_currency($data['30']) ?></td><td class="amount"><?= format_currency($data['60']) ?></td><td class="amount"><?= format_currency($data['90']) ?></td><td class="amount"><?= format_currency($data['older']) ?></td><td class="amount"><strong><?= format_currency($data['total']) ?></strong></td></tr><?php endforeach; ?></tbody>
+                    <tfoot><tr class="total-row"><td><strong>TOTAL</strong></td><td class="amount"><strong><?= format_currency($arTotals['current']) ?></strong></td><td class="amount"><strong><?= format_currency($arTotals['30']) ?></strong></td><td class="amount"><strong><?= format_currency($arTotals['60']) ?></strong></td><td class="amount"><strong><?= format_currency($arTotals['90']) ?></strong></td><td class="amount"><strong><?= format_currency($arTotals['older']) ?></strong></td><td class="amount"><strong><?= format_currency($arTotals['total']) ?></strong></td></tr></tfoot>
                 </table>
             </div>
         </div>
@@ -186,7 +186,7 @@ foreach ($arAgingData as $data) {
             <div class="table-container">
                 <table>
                     <thead><tr><th>Student Name</th><th>Class</th><th>Phone Number</th><th class="amount-header">Total Outstanding Balance</th></tr></thead>
-                    <tbody><?php foreach($studentBalances as $student): ?><tr><td><?= htmlspecialchars($student['name']) ?></td><td><?= htmlspecialchars($student['class_name'] ?? 'N/A') ?></td><td><?= htmlspecialchars($student['phone'] ?? 'N/A') ?></td><td class="amount">$<?= number_format($student['total_balance'], 2) ?></td></tr><?php endforeach; ?></tbody>
+                    <tbody><?php foreach($studentBalances as $student): ?><tr><td><?= htmlspecialchars($student['name']) ?></td><td><?= htmlspecialchars($student['class_name'] ?? 'N/A') ?></td><td><?= htmlspecialchars($student['phone'] ?? 'N/A') ?></td><td class="amount"><?= format_currency($student['total_balance']) ?></td></tr><?php endforeach; ?></tbody>
                 </table>
             </div>
         </div>
@@ -204,7 +204,7 @@ foreach ($arAgingData as $data) {
             <div class="table-container">
                 <table>
                     <thead><tr><th>Metric</th><th class="amount-header">Amount</th></tr></thead>
-                    <tbody><tr><td>Employees Paid</td><td class="amount"><?= $payrollSummary['employee_count'] ?></td></tr><tr><td>Total Gross Pay</td><td class="amount">$<?= number_format($payrollSummary['total_gross'], 2) ?></td></tr><tr><td>Total Deductions</td><td class="amount">$<?= number_format($payrollSummary['total_deductions'], 2) ?></td></tr><tr class="total-row"><td><strong>Total Net Pay</strong></td><td class="amount"><strong>$<?= number_format($payrollSummary['total_net'], 2) ?></strong></td></tr></tbody>
+                    <tbody><tr><td>Employees Paid</td><td class="amount"><?= $payrollSummary['employee_count'] ?></td></tr><tr><td>Total Gross Pay</td><td class="amount"><?= format_currency($payrollSummary['total_gross']) ?></td></tr><tr><td>Total Deductions</td><td class="amount"><?= format_currency($payrollSummary['total_deductions']) ?></td></tr><tr class="total-row"><td><strong>Total Net Pay</strong></td><td class="amount"><strong><?= format_currency($payrollSummary['total_net']) ?></strong></td></tr></tbody>
                 </table>
             </div>
             <h4 style="margin-top: 2rem;">Statutory Deductions Report for <?= date('F Y', strtotime($payPeriod . '-01')) ?></h4>
@@ -212,8 +212,8 @@ foreach ($arAgingData as $data) {
                  <!-- *** THIS IS THE FIX: Updated table headers and data cells *** -->
                 <table>
                     <thead><tr><th>Employee Name</th><th class="amount-header">PAYE</th><th class="amount-header">NHIF</th><th class="amount-header">NSSF</th><th class="amount-header">Housing Levy</th></tr></thead>
-                    <tbody><?php foreach($statutoryData as $row): ?><tr><td><?= htmlspecialchars($row['employee_name']) ?></td><td class="amount">$<?= number_format($row['paye'], 2) ?></td><td class="amount">$<?= number_format($row['nhif'], 2) ?></td><td class="amount">$<?= number_format($row['nssf'], 2) ?></td><td class="amount">$<?= number_format($row['housing_levy'], 2) ?></td></tr><?php endforeach; ?></tbody>
-                    <tfoot><tr class="total-row"><td><strong>TOTALS</strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['paye'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['nhif'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['nssf'], 2) ?></strong></td><td class="amount"><strong>$<?= number_format($statutoryTotals['housing_levy'], 2) ?></strong></td></tr></tfoot>
+                    <tbody><?php foreach($statutoryData as $row): ?><tr><td><?= htmlspecialchars($row['employee_name']) ?></td><td class="amount"><?= format_currency($row['paye']) ?></td><td class="amount"><?= format_currency($row['nhif']) ?></td><td class="amount"><?= format_currency($row['nssf']) ?></td><td class="amount"><?= format_currency($row['housing_levy']) ?></td></tr><?php endforeach; ?></tbody>
+                    <tfoot><tr class="total-row"><td><strong>TOTALS</strong></td><td class="amount"><strong><?= format_currency($statutoryTotals['paye']) ?></strong></td><td class="amount"><strong><?= format_currency($statutoryTotals['nhif']) ?></strong></td><td class="amount"><strong><?= format_currency($statutoryTotals['nssf']) ?></strong></td><td class="amount"><strong><?= format_currency($statutoryTotals['housing_levy']) ?></strong></td></tr></tfoot>
                 </table>
                  <!-- *** END OF FIX *** -->
             </div>
@@ -232,7 +232,7 @@ foreach ($arAgingData as $data) {
             <div class="table-container">
                 <table>
                     <thead><tr><th>Deposit Date</th><th>Bank Account</th><th>Memo / Details</th><th class="amount-header">Amount</th></tr></thead>
-                    <tbody><?php if (empty($depositSummary)): ?><tr><td colspan="4" class="text-center">No deposits found for this period.</td></tr><?php else: ?><?php foreach($depositSummary as $deposit): ?><tr><td><?= date('M d, Y', strtotime($deposit['deposit_date'])) ?></td><td><?= htmlspecialchars($deposit['account_name']) ?></td><td><?= htmlspecialchars($deposit['memo']) ?></td><td class="amount">$<?= number_format($deposit['amount'], 2) ?></td></tr><?php endforeach; ?><?php endif; ?></tbody>
+                    <tbody><?php if (empty($depositSummary)): ?><tr><td colspan="4" class="text-center">No deposits found for this period.</td></tr><?php else: ?><?php foreach($depositSummary as $deposit): ?><tr><td><?= date('M d, Y', strtotime($deposit['deposit_date'])) ?></td><td><?= htmlspecialchars($deposit['account_name']) ?></td><td><?= htmlspecialchars($deposit['memo']) ?></td><td class="amount"><?= format_currency($deposit['amount']) ?></td></tr><?php endforeach; ?><?php endif; ?></tbody>
                 </table>
             </div>
         </div>
@@ -244,7 +244,7 @@ foreach ($arAgingData as $data) {
             <div class="table-container">
                 <table>
                     <thead><tr><th>Student</th><th>Invoice #</th><th>Promise Date</th><th>Promised Due Date</th><th class="amount-header">Amount</th><th>Status</th></tr></thead>
-                    <tbody><?php if (empty($paymentPromises)): ?><tr><td colspan="6" class="text-center">No pending or broken promises found.</td></tr><?php else: ?><?php foreach($paymentPromises as $promise): ?><tr><td><?= htmlspecialchars($promise['student_name']) ?></td><td><a href="view_invoice.php?id=<?= $promise['invoice_id'] ?>" target="_blank"><?= $promise['invoice_id'] ?></a></td><td><?= date('M d, Y', strtotime($promise['promise_date'])) ?></td><td><?= date('M d, Y', strtotime($promise['promised_due_date'])) ?></td><td class="amount">$<?= number_format($promise['promised_amount'], 2) ?></td><td><span class="badge badge-<?= strtolower($promise['status']) ?>"><?= htmlspecialchars($promise['status']) ?></span></td></tr><?php endforeach; ?><?php endif; ?></tbody>
+                    <tbody><?php if (empty($paymentPromises)): ?><tr><td colspan="6" class="text-center">No pending or broken promises found.</td></tr><?php else: ?><?php foreach($paymentPromises as $promise): ?><tr><td><?= htmlspecialchars($promise['student_name']) ?></td><td><a href="view_invoice.php?id=<?= $promise['invoice_id'] ?>" target="_blank"><?= $promise['invoice_id'] ?></a></td><td><?= date('M d, Y', strtotime($promise['promise_date'])) ?></td><td><?= date('M d, Y', strtotime($promise['promised_due_date'])) ?></td><td class="amount"><?= format_currency($promise['promised_amount']) ?></td><td><span class="badge badge-<?= strtolower($promise['status']) ?>"><?= htmlspecialchars($promise['status']) ?></span></td></tr><?php endforeach; ?><?php endif; ?></tbody>
                 </table>
             </div>
         </div>
@@ -311,7 +311,7 @@ const reportOptions = {
         filters: ['student', 'class']
     },
     invoices: {
-        columns: { 'i.invoice_number': 'Invoice #', 's.name': 'Student', 'i.invoice_date': 'Date', 'i.due_date': 'Due Date', 'i.total_amount': 'Total', 'i.paid_amount': 'Paid', 'i.balance': 'Balance', 'i.status': 'Status', 'c.name': 'Class' },
+        columns: { 'i.invoice_number': 'Invoice #', 's.name': 'Student', 'i.invoice_date': 'Date', 'i.due_date': 'Due Date', 'i.total_amount': 'Total', 'i.amount_paid': 'Paid', 'i.balance': 'Balance', 'i.status': 'Status', 'c.name': 'Class' },
         filters: ['student', 'class', 'status']
     },
     expenses: {

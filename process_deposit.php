@@ -66,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $pdo->commit();
-        $_SESSION['success_message'] = "Successfully deposited $" . number_format($total_deposit, 2) . " from " . count($payment_ids) . " payments.";
+        $_SESSION['success_message'] = "Successfully deposited " . format_currency($total_deposit) . " from " . count($payment_ids) . " payments.";
         header("Location: banking.php?tab=deposit");
         exit();
 

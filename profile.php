@@ -25,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $address = trim($_POST['address']);
     $phone = trim($_POST['phone']);
     $email = trim($_POST['email']);
+    $currency_symbol = trim($_POST['currency_symbol']) ?: '$'; // Default to $ if empty
     $logo_url = trim($_POST['existing_logo_url']); // Start with the existing URL
 
     if (empty($school_name)) {
@@ -87,13 +88,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
             $old_details_data = $stmt_old_details->fetch(PDO::FETCH_ASSOC);
 
             if ($old_details_data) {
-                $stmt = $pdo->prepare("UPDATE school_details SET address = ?, phone = ?, email = ?, logo_url = ? WHERE school_id = ?");
-                $stmt->execute([$address, $phone, $email, $logo_url, $school_id]);
+                $stmt = $pdo->prepare("UPDATE school_details SET address = ?, phone = ?, email = ?, logo_url = ?, currency_symbol = ? WHERE school_id = ?");
+                $stmt->execute([$address, $phone, $email, $logo_url, $currency_symbol, $school_id]);
             } else {
-                $stmt = $pdo->prepare("INSERT INTO school_details (school_id, address, phone, email, logo_url) VALUES (?, ?, ?, ?, ?)");
-                $stmt->execute([$school_id, $address, $phone, $email, $logo_url]);
+                $stmt = $pdo->prepare("INSERT INTO school_details (school_id, address, phone, email, logo_url, currency_symbol) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$school_id, $address, $phone, $email, $logo_url, $currency_symbol]);
             }
-            log_audit($pdo, 'UPDATE', 'school_details', $school_id, ['before' => $old_details_data, 'after' => ['address' => $address, 'phone' => $phone, 'email' => $email, 'logo_url' => $logo_url]]);
+            log_audit($pdo, 'UPDATE', 'school_details', $school_id, ['before' => $old_details_data, 'after' => ['address' => $address, 'phone' => $phone, 'email' => $email, 'logo_url' => $logo_url, 'currency_symbol' => $currency_symbol]]);
 
             $pdo->commit();
             $success_message = 'Profile updated successfully!';
@@ -205,7 +206,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_add_students']))
 include 'header.php';
 
 // Fetch current school details for the form
-$stmt = $pdo->prepare("SELECT s.name, sd.address, sd.phone, sd.email, sd.logo_url FROM schools s LEFT JOIN school_details sd ON s.id = sd.school_id WHERE s.id = ?");
+$stmt = $pdo->prepare("SELECT s.name, sd.address, sd.phone, sd.email, sd.logo_url, sd.currency_symbol FROM schools s LEFT JOIN school_details sd ON s.id = sd.school_id WHERE s.id = ?");
 $stmt->execute([$school_id]);
 $profile = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$profile) { die("Error: Could not retrieve school profile."); }
@@ -275,6 +276,19 @@ if(isset($_GET['upload_error']) && isset($_SESSION['upload_errors'])) {
         <div class="form-group">
             <label for="email">Public Email Address</label>
             <input type="email" id="email" name="email" class="form-control" value="<?php echo htmlspecialchars($profile['email'] ?? ''); ?>">
+        </div>
+        
+        <div class="form-group">
+            <label for="currency_symbol">Currency Symbol</label>
+            <select id="currency_symbol" name="currency_symbol" class="form-control">
+                <option value="$" <?php echo ($profile['currency_symbol'] ?? '$') === '$' ? 'selected' : ''; ?>>$ (Dollar)</option>
+                <option value="Ksh" <?php echo ($profile['currency_symbol'] ?? '$') === 'Ksh' ? 'selected' : ''; ?>>Ksh (Kenyan Shilling)</option>
+                <option value="€" <?php echo ($profile['currency_symbol'] ?? '$') === '€' ? 'selected' : ''; ?>>€ (Euro)</option>
+                <option value="£" <?php echo ($profile['currency_symbol'] ?? '$') === '£' ? 'selected' : ''; ?>>£ (British Pound)</option>
+                <option value="₦" <?php echo ($profile['currency_symbol'] ?? '$') === '₦' ? 'selected' : ''; ?>>₦ (Nigerian Naira)</option>
+                <option value="R" <?php echo ($profile['currency_symbol'] ?? '$') === 'R' ? 'selected' : ''; ?>>R (South African Rand)</option>
+            </select>
+            <small class="form-text text-muted">Choose the currency symbol that will be displayed throughout the system.</small>
         </div>
 
         <div class="form-group">
@@ -475,7 +489,7 @@ if(isset($_GET['upload_error']) && isset($_SESSION['upload_errors'])) {
         </td>
         <td><input type="number" name="quantity" class="quantity" min="1" value="1" required></td>
         <td><input type="number" name="unit_price" class="unit-price" step="0.01" required></td>
-        <td class="amount-cell text-right">$0.00</td>
+        <td class="amount-cell text-right"><?= format_currency(0) ?></td>
         <td><button type="button" class="remove-item" onclick="this.closest('tr').remove()">×</button></td>
     </tr>
 </template>
@@ -484,6 +498,12 @@ if(isset($_GET['upload_error']) && isset($_SESSION['upload_errors'])) {
 <?php include 'footer.php'; ?>
 
 <script>
+// Currency helper function
+function formatCurrencyJS(amount) {
+    const symbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
+    return symbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+}
+
 function openModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
 function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
 
@@ -532,7 +552,7 @@ function updateTemplateItemAmount(row) {
     const quantity = parseFloat(row.querySelector('.quantity').value) || 0;
     const unitPrice = parseFloat(row.querySelector('.unit-price').value) || 0;
     const amountCell = row.querySelector('.amount-cell');
-    amountCell.textContent = '$' + (quantity * unitPrice).toFixed(2);
+    amountCell.textContent = formatCurrencyJS(quantity * unitPrice);
 }
 
 function prepareTemplateUpdate() {

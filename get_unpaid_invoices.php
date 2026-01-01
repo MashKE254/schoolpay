@@ -26,15 +26,15 @@ try {
     // - Adds the crucial 'school_id' check for multi-tenancy security.
     // - Uses a small threshold (0.009) to safely handle floating-point numbers.
     $stmt = $pdo->prepare("
-        SELECT 
+        SELECT
             id,
             invoice_date,
             due_date,
             total_amount,
-            paid_amount,
+            amount_paid,
             balance
         FROM invoices
-        WHERE student_id = :student_id 
+        WHERE student_id = :student_id
           AND school_id = :school_id
           AND balance > 0.009
         ORDER BY due_date ASC
@@ -50,7 +50,7 @@ try {
     // Ensure numeric types are correctly cast for JSON response
     foreach ($invoices as &$invoice) {
         $invoice['total_amount'] = (float)$invoice['total_amount'];
-        $invoice['paid_amount'] = (float)$invoice['paid_amount'];
+        $invoice['amount_paid'] = (float)$invoice['amount_paid'];
         $invoice['balance'] = (float)$invoice['balance'];
     }
 

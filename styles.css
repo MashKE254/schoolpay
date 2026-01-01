@@ -489,3 +489,117 @@ footer {
     .mobile-menu-toggle { display: block; }
     .user-details { display: none; }
 }
+
+/* ===== STUDENT FORM TABS ===== */
+.student-form-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid var(--border);
+}
+
+.student-tab-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: var(--light);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--dark);
+    transition: all 0.2s ease;
+}
+
+.student-tab-btn:hover {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.student-tab-btn.active {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.student-tab-btn i {
+    font-size: 14px;
+}
+
+.student-form-section {
+    display: none;
+    animation: fadeIn 0.3s ease;
+}
+
+.student-form-section.active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.student-form-section h4 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 15px 0;
+    padding: 10px 0;
+    color: var(--primary);
+    font-size: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.student-form-section h4 i {
+    color: var(--secondary);
+}
+
+/* Form Grid Layouts */
+.form-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.form-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+/* Required field indicator */
+.required {
+    color: var(--danger);
+    font-weight: bold;
+}
+
+/* Responsive adjustments for student form */
+@media (max-width: 768px) {
+    .student-form-tabs {
+        flex-direction: column;
+    }
+
+    .student-tab-btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .form-grid-2,
+    .form-grid-3 {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 992px) {
+    .form-grid-3 {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

@@ -153,7 +153,7 @@ require_once 'header.php';
     <div style="padding: 1rem; border-bottom: 1px solid #eee; margin-bottom: 1rem;">
         <p style="margin: 0;"><strong>File:</strong> <?= htmlspecialchars($batch['original_filename']) ?></p>
         <p style="margin: 0;"><strong>Transaction Date:</strong> <?= htmlspecialchars(date('M d, Y', strtotime($batch['transaction_date']))) ?></p>
-        <p style="margin: 0;"><strong>Total Amount:</strong> $<?= number_format($batch['total_amount'], 2) ?></p>
+        <p style="margin: 0;"><strong>Total Amount:</strong> <?= format_currency($batch['total_amount']) ?></p>
         <p style="margin: 0;"><strong>Paying From Account:</strong> <?= htmlspecialchars($batch['account_name']) ?></p>
     </div>
 
@@ -174,7 +174,7 @@ require_once 'header.php';
                     <?php foreach ($batch_items as $index => $item): ?>
                     <tr>
                         <td><?= htmlspecialchars($item['description']) ?></td>
-                        <td class="amount"><strong>$<?= number_format($item['total_cost'], 2) ?></strong></td>
+                        <td class="amount"><strong><?= format_currency($item['total_cost']) ?></strong></td>
                         <td>
                             <input type="hidden" name="items[<?= $index ?>][id]" value="<?= $item['id'] ?>">
                             <select name="items[<?= $index ?>][account_id]" class="form-control" required>

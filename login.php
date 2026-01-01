@@ -1,9 +1,10 @@
 <?php
-// login.php - User Authentication
+// login.php - User Authentication with Security
 require 'config.php';
 require 'functions.php';
+require 'security.php';
 
-session_start();
+init_secure_session();
 
 // If user is already logged in, redirect to dashboard
 if (isset($_SESSION['user_id'])) {
@@ -12,35 +13,59 @@ if (isset($_SESSION['user_id'])) {
 }
 
 $errors = [];
+$rate_limited = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = trim($_POST['email']);
-    $password = $_POST['password'];
+    // CSRF Protection
+    if (!csrf_verify(false)) {
+        $errors[] = 'Security token validation failed. Please refresh and try again.';
+        log_security_event('CSRF validation failed on login', ['email' => $_POST['email'] ?? 'unknown']);
+    }
+    // Rate Limiting - 5 attempts per 5 minutes
+    else if (is_rate_limited('login', 5, 300)) {
+        $rate_limited = true;
+        $reset_time = rate_limit_reset_time('login', 300);
+        $minutes = ceil($reset_time / 60);
+        $errors[] = "Too many login attempts. Please try again in {$minutes} minute(s).";
+        log_security_event('Login rate limit exceeded', ['email' => $_POST['email'] ?? 'unknown']);
+    }
+    else {
+        $email = sanitize_input($_POST['email'] ?? '');
+        $password = $_POST['password'] ?? '';
 
-    if (empty($email) || empty($password)) {
-        $errors[] = 'Both email and password are required.';
-    } else {
-        // Fetch user from the database
-        $stmt = $pdo->prepare("SELECT id, school_id, name, email, password FROM users WHERE email = ?");
-        $stmt->execute([$email]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        // Verify user and password
-        if ($user && password_verify($password, $user['password'])) {
-            // Password is correct, start a new session
-            session_regenerate_id(true); // Prevent session fixation
-
-            // Store user data in session
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['school_id'] = $user['school_id'];
-            $_SESSION['user_name'] = $user['name'];
-
-            // Redirect to the main dashboard
-            header("Location: index.php");
-            exit();
+        if (empty($email) || empty($password)) {
+            $errors[] = 'Both email and password are required.';
+        } else if (!validate_email($email)) {
+            $errors[] = 'Please enter a valid email address.';
         } else {
-            // Invalid credentials
-            $errors[] = 'Invalid email or password.';
+            // Fetch user from the database
+            $stmt = $pdo->prepare("SELECT id, school_id, name, email, password FROM users WHERE email = ?");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Verify user and password
+            if ($user && password_verify($password, $user['password'])) {
+                // Password is correct, reset rate limit
+                reset_rate_limit('login');
+
+                // Start a new session
+                session_regenerate_id(true); // Prevent session fixation
+
+                // Store user data in session
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['school_id'] = $user['school_id'];
+                $_SESSION['user_name'] = $user['name'];
+
+                log_security_event('Successful login', ['user_id' => $user['id'], 'email' => $email]);
+
+                // Redirect to the main dashboard
+                header("Location: index.php");
+                exit();
+            } else {
+                // Invalid credentials
+                $errors[] = 'Invalid email or password.';
+                log_security_event('Failed login attempt', ['email' => $email]);
+            }
         }
     }
 }
@@ -51,6 +76,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - School Finance System</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#1a365d',
+                        secondary: '#2c5282',
+                        accent: '#3182ce',
+                        success: '#38a169',
+                        warning: '#d69e2e',
+                        danger: '#e53e3e',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -160,6 +206,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php endif; ?>
 
             <form action="login.php" method="post">
+                <?php echo csrf_field(); ?>
                 <div class="form-group">
                     <label for="email">Email Address</label>
                     <input type="email" id="email" name="email" class="form-control" required>

@@ -74,10 +74,10 @@ try {
     if (!empty($student_ids)) {
         $placeholders = implode(',', array_fill(0, count($student_ids), '?'));
         $stmt_balances = $pdo->prepare("
-            SELECT 
-                student_id, 
-                COALESCE(SUM(total_amount), 0) - COALESCE(SUM(paid_amount), 0) as balance 
-            FROM invoices 
+            SELECT
+                student_id,
+                COALESCE(SUM(total_amount), 0) - COALESCE(SUM(amount_paid), 0) as balance
+            FROM invoices
             WHERE student_id IN ($placeholders) AND school_id = ?
             GROUP BY student_id
         ");
@@ -98,7 +98,7 @@ try {
     $stmt_summary = $pdo->prepare("
         SELECT
             COALESCE(SUM(i.total_amount), 0) AS totalInvoiced,
-            COALESCE(SUM(i.paid_amount), 0) AS totalPaid
+            COALESCE(SUM(i.amount_paid), 0) AS totalPaid
         FROM invoices i
         WHERE i.school_id = :school_id
         AND i.student_id IN (SELECT id FROM students WHERE class_id = :class_id AND school_id = :school_id)

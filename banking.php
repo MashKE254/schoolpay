@@ -258,6 +258,12 @@ usort($transaction_history, function($a, $b) {
     </div>
 </div>
 <script>
+// Currency helper function
+function formatCurrencyJS(amount) {
+    const symbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
+    return symbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+}
+
 function openTab(evt, tabName) {
     document.querySelectorAll(".tab-content").forEach(tc => tc.classList.remove("active"));
     document.querySelectorAll(".tab-link").forEach(tl => tl.classList.remove("active"));
@@ -282,7 +288,7 @@ function updateDepositTotal() {
     document.querySelectorAll('.deposit-checkbox:checked').forEach(cb => {
         total += parseFloat(cb.closest('tr').querySelector('[data-amount]').dataset.amount);
     });
-    document.getElementById('depositTotal').textContent = '$' + total.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    document.getElementById('depositTotal').textContent = formatCurrencyJS(total);
 }
 
 function updateRowStyle(checkbox) {

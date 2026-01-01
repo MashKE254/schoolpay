@@ -62,7 +62,7 @@ $items = getItemsWithSubItems($pdo);
                     </div>
                 </div>
                 <div class="item-details">
-                    <p><strong>Price:</strong> $<?php echo number_format($item['price'], 2); ?></p>
+                    <p><strong>Price:</strong> <?php echo format_currency($item['price']); ?></p>
                     <?php if (!empty($item['description'])): ?>
                         <p><strong>Description:</strong> <?php echo htmlspecialchars($item['description']); ?></p>
                     <?php endif; ?>
@@ -85,7 +85,7 @@ $items = getItemsWithSubItems($pdo);
                                     </div>
                                 </div>
                                 <div class="sub-item-details">
-                                    <p><strong>Price:</strong> $<?php echo number_format($sub_item['price'], 2); ?></p>
+                                    <p><strong>Price:</strong> <?php echo format_currency($sub_item['price']); ?></p>
                                     <?php if (!empty($sub_item['description'])): ?>
                                         <p><strong>Description:</strong> <?php echo htmlspecialchars($sub_item['description']); ?></p>
                                     <?php endif; ?>

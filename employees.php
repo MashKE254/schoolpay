@@ -371,12 +371,12 @@ $payroll_history = getPayrollRecords($pdo, $school_id);
                                 <td><?= htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name']) ?></td>
                                 <td class="amount" data-rate="<?= (float)($emp['daily_rate'] ?? 0) ?>">$<?= number_format((float)($emp['daily_rate'] ?? 0), 2) ?></td>
                                 <td><input type="number" name="days_worked[<?= $emp['id'] ?>]" class="form-control days-worked-input" min="0" max="7" value="0" step="1"></td>
-                                <td class="amount row-total">$0.00</td>
+                                <td class="amount row-total"><?= format_currency(0) ?></td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
                         <tfoot>
-                            <tr class="total-row"><td colspan="3" style="text-align:right; font-weight: bold;">Total Weekly Payout:</td><td id="grand-total" class="amount" style="font-weight: bold;">$0.00</td></tr>
+                            <tr class="total-row"><td colspan="3" style="text-align:right; font-weight: bold;">Total Weekly Payout:</td><td id="grand-total" class="amount" style="font-weight: bold;"><?= format_currency(0) ?></td></tr>
                         </tfoot>
                     </table>
                 </div>
@@ -436,6 +436,12 @@ $payroll_history = getPayrollRecords($pdo, $school_id);
 </style>
 
 <script>
+    // Currency helper function
+    function formatCurrencyJS(amount) {
+        const symbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
+        return symbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+    }
+
     function openTab(evt, tabName) {
         document.querySelectorAll(".tab-content").forEach(tab => tab.style.display = "none");
         document.querySelectorAll(".tab-link").forEach(link => link.classList.remove("active"));
@@ -455,10 +461,10 @@ $payroll_history = getPayrollRecords($pdo, $school_id);
             const rate = parseFloat(row.querySelector('[data-rate]').dataset.rate);
             const days = parseFloat(row.querySelector('.days-worked-input').value) || 0;
             const rowTotal = rate * days;
-            row.querySelector('.row-total').textContent = '$' + rowTotal.toFixed(2);
+            row.querySelector('.row-total').textContent = formatCurrencyJS(rowTotal);
             grandTotal += rowTotal;
         });
-        document.getElementById('grand-total').textContent = '$' + grandTotal.toFixed(2);
+        document.getElementById('grand-total').textContent = formatCurrencyJS(grandTotal);
     }
 
     function resetEmployeeForm() {

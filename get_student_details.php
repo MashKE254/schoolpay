@@ -34,10 +34,10 @@ try {
 
     // --- 2. Calculate Financial Summary ---
     $stmt_summary = $pdo->prepare("
-        SELECT 
+        SELECT
             COALESCE(SUM(total_amount), 0) as totalInvoiced,
-            COALESCE(SUM(paid_amount), 0) as totalPaid
-        FROM invoices 
+            COALESCE(SUM(amount_paid), 0) as totalPaid
+        FROM invoices
         WHERE student_id = ? AND school_id = ?
     ");
     $stmt_summary->execute([$student_id, $school_id]);

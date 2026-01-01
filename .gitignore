@@ -1,0 +1,45 @@
+# Environment variables
+.env
+
+# Composer
+/vendor/
+composer.phar
+
+# Logs
+*.log
+error.log
+access.log
+/logs/*
+!/logs/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Uploads
+/uploads/**
+!/uploads/.gitkeep
+
+# Temporary files
+/temp/
+*.tmp
+*.cache
+
+# Database backups
+*.sql
+*.sql.gz
+
+# PHPUnit
+phpunit.xml
+.phpunit.result.cache
+
+# Node modules (if you add frontend build tools)
+node_modules/
+
+# Config overrides
+config.local.php

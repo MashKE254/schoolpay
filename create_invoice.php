@@ -249,7 +249,7 @@ $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <div class="form-group"><label for="template_select">Templates</label><div class="template-controls"><select id="template_select"><option value="">Load from template...</option><?php foreach ($templates as $template): ?><option value="<?= $template['id'] ?>"><?= htmlspecialchars($template['name']) ?></option><?php endforeach; ?></select><button type="button" class="btn-secondary" onclick="openSaveTemplateModal()">Save as Template</button></div></div>
         </div>
         <div class="totals-section">
-            <div class="totals-summary"><div class="total-line"><span>Subtotal</span><span id="subtotal-amount">$0.00</span></div><div class="total-line grand-total"><span>Total</span><span id="total-amount">$0.00</span></div></div>
+            <div class="totals-summary"><div class="total-line"><span>Subtotal</span><span id="subtotal-amount"><?= format_currency(0) ?></span></div><div class="total-line grand-total"><span>Total</span><span id="total-amount"><?= format_currency(0) ?></span></div></div>
         </footer>
 
     <div class="actions-bar">
@@ -297,6 +297,12 @@ $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 const allItems = <?php echo json_encode($items_list); ?>;
 let isTemplateLoaded = false; // **NEW**: State variable to track if a template is active
 
+// Currency helper function
+function formatCurrencyJS(amount) {
+    const symbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
+    return symbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+}
+
 function openModal(modalId) { document.getElementById(modalId).style.display = 'block'; }
 function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
 function removeItem(btn){ 
@@ -317,7 +323,7 @@ function addItemEventListeners(row){
 function updateItemAmount(row){
     const quantity = parseFloat(row.querySelector(".quantity").value) || 0;
     const unitPrice = parseFloat(row.querySelector(".unit-price").value) || 0;
-    row.querySelector(".amount-cell").textContent = "$" + (quantity * unitPrice).toFixed(2);
+    row.querySelector(".amount-cell").textContent = formatCurrencyJS(quantity * unitPrice);
     updateTotals();
 }
 
@@ -328,8 +334,8 @@ function updateTotals(){
         const unitPrice = parseFloat(row.querySelector(".unit-price").value) || 0;
         total += quantity * unitPrice;
     });
-    document.getElementById("subtotal-amount").textContent = "$" + total.toFixed(2);
-    document.getElementById("total-amount").textContent = "$" + total.toFixed(2);
+    document.getElementById("subtotal-amount").textContent = formatCurrencyJS(total);
+    document.getElementById("total-amount").textContent = formatCurrencyJS(total);
 }
 
 function openSaveTemplateModal() {
@@ -380,7 +386,7 @@ function addItemRow(item = null, isManual = true) {
         <td><input type="text" name="description[]" class="description" placeholder="Item description"></td>
         <td><input type="number" name="quantity[]" class="quantity" min="1" value="1" required></td>
         <td><input type="number" name="unit_price[]" class="unit-price" step="0.01" value="0.00" required></td>
-        <td class="amount-cell">$0.00</td>
+        <td class="amount-cell"><?= format_currency(0) ?></td>
         <td><button type="button" class="remove-item" onclick="removeItem(this)">×</button></td>
     `;
 

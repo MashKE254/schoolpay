@@ -380,7 +380,7 @@ function getStudentTransactions($pdo, $student_id, $school_id) {
 
 function getInvoices(PDO $pdo, int $school_id, $student_id = null, ?string $status = null, ?string $start_date = null, ?string $end_date = null): array {
     $sql = "SELECT 
-                i.id, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, i.status, s.name as student_name
+                i.id, i.invoice_date, i.due_date, i.total_amount, i.amount_paid, i.status, s.name as student_name
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             WHERE i.school_id = :school_id";
@@ -500,9 +500,9 @@ function createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, 
 
 function getUnpaidInvoices($pdo, $student_id, $school_id) {
     $stmt = $pdo->prepare("
-        SELECT i.id, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) AS balance
+        SELECT i.id, i.invoice_date, i.due_date, i.total_amount, i.amount_paid, (i.total_amount - i.amount_paid) AS balance
         FROM invoices i
-        WHERE i.student_id = ? AND i.school_id = ? AND (i.total_amount - i.paid_amount) > 0.009
+        WHERE i.student_id = ? AND i.school_id = ? AND (i.total_amount - i.amount_paid) > 0.009
         ORDER BY i.invoice_date ASC
     ");
     $stmt->execute([$student_id, $school_id]);
@@ -510,7 +510,7 @@ function getUnpaidInvoices($pdo, $student_id, $school_id) {
 }
 
 function getInvoiceBalance($pdo, $invoice_id, $school_id) {
-    $stmt = $pdo->prepare("SELECT (total_amount - paid_amount) AS balance FROM invoices WHERE id = ? AND school_id = ?");
+    $stmt = $pdo->prepare("SELECT (total_amount - amount_paid) AS balance FROM invoices WHERE id = ? AND school_id = ?");
     $stmt->execute([$invoice_id, $school_id]);
     return $stmt->fetchColumn();
 }
@@ -732,14 +732,14 @@ function generateCustomReport(PDO $pdo, int $school_id, array $options): array
     // --- Whitelists for Security ---
     $allowed_columns = [
         'payments' => ['r.receipt_number', 's.name', 'p.payment_date', 'p.amount', 'p.payment_method', 'c.name'],
-        'invoices' => ['i.invoice_number', 's.name', 'i.invoice_date', 'i.due_date', 'i.total_amount', 'i.paid_amount', 'i.balance', 'i.status', 'c.name'],
+        'invoices' => ['i.invoice_number', 's.name', 'i.invoice_date', 'i.due_date', 'i.total_amount', 'i.amount_paid', 'i.balance', 'i.status', 'c.name'],
         'expenses' => ['a.account_name', 'e.transaction_date', 'e.description', 'e.amount', 'e.payment_method'],
         'students' => ['s.student_id_no', 's.name', 'c.name', 's.status', 's.phone', 's.email'],
     ];
 
     $column_map = [
         'payments' => ['r.receipt_number' => 'Receipt #', 's.name' => 'Student', 'p.payment_date' => 'Date', 'p.amount' => 'Amount', 'p.payment_method' => 'Method', 'c.name' => 'Class'],
-        'invoices' => ['i.invoice_number' => 'Invoice #', 's.name' => 'Student', 'i.invoice_date' => 'Date', 'i.due_date' => 'Due Date', 'i.total_amount' => 'Total', 'i.paid_amount' => 'Paid', 'i.balance' => 'Balance', 'i.status' => 'Status', 'c.name' => 'Class'],
+        'invoices' => ['i.invoice_number' => 'Invoice #', 's.name' => 'Student', 'i.invoice_date' => 'Date', 'i.due_date' => 'Due Date', 'i.total_amount' => 'Total', 'i.amount_paid' => 'Paid', 'i.balance' => 'Balance', 'i.status' => 'Status', 'c.name' => 'Class'],
         'expenses' => ['a.account_name' => 'Account', 'e.transaction_date' => 'Date', 'e.description' => 'Description', 'e.amount' => 'Amount', 'e.payment_method' => 'Method'],
         'students' => ['s.student_id_no' => 'Student ID', 's.name' => 'Name', 'c.name' => 'Class', 's.status' => 'Status', 's.phone' => 'Phone', 's.email' => 'Email'],
     ];
@@ -853,10 +853,10 @@ function getArAgingData(PDO $pdo, int $school_id) {
     // This is a consolidated function to fetch AR Aging data
     $arAgingData = [];
     $arStmt = $pdo->prepare("
-        SELECT s.name as student_name, (i.total_amount - i.paid_amount) as balance, i.due_date
+        SELECT s.name as student_name, (i.total_amount - i.amount_paid) as balance, i.due_date
         FROM invoices i
         JOIN students s ON i.student_id = s.id
-        WHERE i.school_id = ? AND (i.total_amount - i.paid_amount) > 0.01
+        WHERE i.school_id = ? AND (i.total_amount - i.amount_paid) > 0.01
     ");
     $arStmt->execute([$school_id]);
     
@@ -887,7 +887,7 @@ function getArAgingData(PDO $pdo, int $school_id) {
 
 function getStudentBalanceReport(PDO $pdo, int $school_id) {
     $stmt = $pdo->prepare("
-        SELECT s.name, s.phone, c.name as class_name, SUM(i.total_amount - i.paid_amount) as total_balance
+        SELECT s.name, s.phone, c.name as class_name, SUM(i.total_amount - i.amount_paid) as total_balance
         FROM students s
         LEFT JOIN invoices i ON s.id = i.student_id
         LEFT JOIN classes c ON s.class_id = c.id
@@ -1040,10 +1040,10 @@ function getBalanceSheetData($pdo, $school_id) {
 
 function getOpenInvoicesReport($pdo, $school_id) {
     $stmt = $pdo->prepare("
-        SELECT i.id, s.name AS student_name, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) AS balance
+        SELECT i.id, s.name AS student_name, i.invoice_date, i.due_date, i.total_amount, i.amount_paid, (i.total_amount - i.amount_paid) AS balance
         FROM invoices i
         JOIN students s ON i.student_id = s.id
-        WHERE i.school_id = ? AND (i.total_amount - i.paid_amount) > 0
+        WHERE i.school_id = ? AND (i.total_amount - i.amount_paid) > 0
         ORDER BY i.due_date ASC
     ");
     $stmt->execute([$school_id]);
@@ -1340,7 +1340,7 @@ function createInvoiceFromTemplate(PDO $pdo, int $school_id, int $student_id, in
         }
 
         $stmt_invoice = $pdo->prepare(
-            "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, paid_amount, status) 
+            "INSERT INTO invoices (school_id, student_id, invoice_number, invoice_date, due_date, total_amount, amount_paid, status) 
              VALUES (?, ?, ?, ?, ?, ?, 0.00, 'Unpaid')"
         );
         $stmt_invoice->execute([$school_id, $student_id, $invoice_number, $invoice_date, $due_date, $total_amount]);
@@ -1498,10 +1498,10 @@ function getNewStudentsForPeriod(PDO $pdo, int $school_id, string $start_date, s
  */
 function getStudentBalance(PDO $pdo, int $student_id, int $school_id): float {
     $stmt = $pdo->prepare("
-        SELECT 
+        SELECT
             COALESCE(SUM(total_amount), 0) as totalInvoiced,
-            COALESCE(SUM(paid_amount), 0) as totalPaid
-        FROM invoices 
+            COALESCE(SUM(amount_paid), 0) as totalPaid
+        FROM invoices
         WHERE student_id = ? AND school_id = ?
     ");
     $stmt->execute([$student_id, $school_id]);
