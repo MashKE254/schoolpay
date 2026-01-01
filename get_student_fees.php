@@ -45,6 +45,7 @@ if (!$class_id || !$academic_year || !$term) {
 
 try {
     // 1. Get all fee structure items for that class and term
+    // EXCLUDE transport and activity items since they're automatically added from their respective tables
     $stmt_fees = $pdo->prepare(
         "SELECT fsi.*, i.name as item_name, i.fee_frequency
          FROM fee_structure_items fsi
@@ -52,7 +53,11 @@ try {
          WHERE fsi.school_id = ?
            AND fsi.class_id = ?
            AND fsi.academic_year = ?
-           AND fsi.term = ?"
+           AND fsi.term = ?
+           AND i.name NOT LIKE '%Transport%'
+           AND i.name NOT LIKE '%transport%'
+           AND i.name NOT LIKE 'Activity:%'
+           AND i.name NOT LIKE 'Activity :%'"
     );
     $stmt_fees->execute([$school_id, $class_id, $academic_year, $term]);
     $all_fees = $stmt_fees->fetchAll(PDO::FETCH_ASSOC);
