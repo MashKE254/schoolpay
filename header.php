@@ -134,7 +134,15 @@ $pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' 
                     <a href="bulk_actions.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'bulk_actions.php' ? 'active' : ''; ?>">
                         <i class="fas fa-cogs"></i> Bulk Actions
                     </a>
-                    <li><a href="inventory.php"><i class="fas fa-boxes"></i><span>Inventory</span></a></li>
+                    <a href="transport_management.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'transport_management.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-bus"></i> Transport
+                    </a>
+                    <a href="activities_management.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'activities_management.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-running"></i> Activities
+                    </a>
+                    <a href="inventory.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'inventory.php' ? 'active' : ''; ?>">
+                        <i class="fas fa-boxes"></i> Inventory
+                    </a>
                     <a href="profile.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                         <i class="fas fa-user-cog"></i> My Profile
                     </a>
