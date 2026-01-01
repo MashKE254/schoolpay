@@ -1328,6 +1328,87 @@ table tbody tr:hover,
 }
 
 /* =====================================================================
+   16.5 ACCORDION COMPONENT
+   ===================================================================== */
+.accordion-item {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: var(--spacing-md);
+    overflow: hidden;
+    transition: all var(--transition-base);
+}
+
+.accordion-item:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.accordion-header {
+    width: 100%;
+    padding: var(--spacing-lg) var(--spacing-xl);
+    background: linear-gradient(135deg, var(--gray-50), var(--white));
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all var(--transition-base);
+}
+
+.accordion-header:hover {
+    background: linear-gradient(135deg, var(--primary-50), var(--gray-50));
+}
+
+.accordion-header.active {
+    background: linear-gradient(135deg, var(--primary-100), var(--primary-50));
+    color: var(--primary-700);
+}
+
+.accordion-header::after {
+    content: '\f078';
+    font-family: 'Font Awesome 5 Free';
+    font-weight: 900;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    transition: transform var(--transition-base);
+}
+
+.accordion-header.active::after {
+    transform: rotate(180deg);
+    color: var(--primary-700);
+}
+
+.accordion-content {
+    display: none;
+    padding: var(--spacing-xl);
+    background: var(--white);
+    border-top: 1px solid var(--border);
+}
+
+.accordion-content h4 {
+    margin-top: 0;
+    margin-bottom: var(--spacing-md);
+    color: var(--text);
+    font-size: var(--text-base);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.total-fees {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--primary-700);
+    background: var(--primary-50);
+    padding: var(--spacing-xs) var(--spacing-md);
+    border-radius: var(--radius-full);
+}
+
+/* =====================================================================
    17. FOOTER
    ===================================================================== */
 footer {
