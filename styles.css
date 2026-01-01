@@ -979,7 +979,8 @@ table tbody tr:hover,
     backdrop-filter: blur(4px);
     align-items: center;
     justify-content: center;
-    padding: var(--spacing-lg);
+    padding: var(--spacing-md);
+    overflow-y: auto;
 }
 
 .modal.active {
@@ -992,10 +993,12 @@ table tbody tr:hover,
     box-shadow: var(--shadow-2xl);
     width: 90%;
     max-width: 600px;
-    max-height: 90vh;
+    max-height: calc(100vh - 2rem);
+    margin: auto;
     display: flex;
     flex-direction: column;
     animation: modalSlideIn 0.3s ease;
+    position: relative;
 }
 
 @keyframes modalSlideIn {
@@ -1015,6 +1018,12 @@ table tbody tr:hover,
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--card-bg);
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 
 .modal-header h3 {
@@ -1029,7 +1038,27 @@ table tbody tr:hover,
 .modal-body {
     padding: var(--spacing-xl);
     overflow-y: auto;
-    flex: 1;
+    overflow-x: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.modal-body::-webkit-scrollbar {
+    width: 8px;
+}
+
+.modal-body::-webkit-scrollbar-track {
+    background: var(--gray-100);
+    border-radius: var(--radius-sm);
+}
+
+.modal-body::-webkit-scrollbar-thumb {
+    background: var(--gray-400);
+    border-radius: var(--radius-sm);
+}
+
+.modal-body::-webkit-scrollbar-thumb:hover {
+    background: var(--gray-500);
 }
 
 .modal-footer {
@@ -1038,6 +1067,12 @@ table tbody tr:hover,
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-md);
+    flex-shrink: 0;
+    background: var(--card-bg);
+    border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
 }
 
 .close {
@@ -1271,8 +1306,43 @@ table tbody tr:hover,
         border-radius: var(--radius-lg);
     }
 
+    .modal {
+        padding: 0;
+        align-items: flex-end;
+    }
+
     .modal-content {
-        max-width: 95%;
+        width: 100%;
+        max-width: 100%;
+        max-height: 95vh;
+        border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+        margin: 0;
+        animation: modalSlideUp 0.3s ease;
+    }
+
+    @keyframes modalSlideUp {
+        from {
+            opacity: 0;
+            transform: translateY(100%);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .modal-header {
+        padding: var(--spacing-lg);
+        border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+    }
+
+    .modal-body {
+        padding: var(--spacing-lg);
+        max-height: calc(95vh - 160px);
+    }
+
+    .modal-footer {
+        padding: var(--spacing-lg);
     }
 
     .form-actions,
