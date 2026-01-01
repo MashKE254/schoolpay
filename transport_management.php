@@ -6,6 +6,9 @@
  * Supports round-trip and one-way pricing per zone
  */
 
+// Start output buffering to prevent "headers already sent" errors
+ob_start();
+
 require_once 'config.php';
 require_once 'functions.php';
 require_once 'header.php';
@@ -562,4 +565,8 @@ window.onclick = function(event) {
 }
 </script>
 
-<?php include 'footer.php'; ?>
+<?php
+include 'footer.php';
+// Flush output buffer
+if (ob_get_level() > 0) ob_end_flush();
+?>
