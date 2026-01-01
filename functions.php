@@ -475,10 +475,50 @@ function createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, 
         throw new Exception("Database failed to create the invoice record for student ID {$student_id}.");
     }
 
-    // 4. Insert invoice items
+    // 4. Insert invoice items and track one-time/annual fees
     $stmt_items = $pdo->prepare("INSERT INTO invoice_items (school_id, invoice_id, item_id, quantity, unit_price) VALUES (?, ?, ?, ?, ?)");
+    $stmt_check_fee_type = $pdo->prepare("SELECT fee_frequency FROM items WHERE id = ?");
+    $stmt_track_onetime = $pdo->prepare("INSERT INTO one_time_fees_billed (school_id, student_id, item_id, invoice_id, academic_year, billed_date, amount) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE invoice_id=VALUES(invoice_id)");
+    $stmt_track_annual = $pdo->prepare("INSERT INTO annual_fees_billed (school_id, student_id, item_id, invoice_id, academic_year, billed_date, amount) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE invoice_id=VALUES(invoice_id)");
+
+    // Get current academic year for tracking
+    $current_academic_year = date('Y') . '-' . (date('Y') + 1);
+
     foreach ($items as $item) {
-        $stmt_items->execute([$school_id, $invoice_id, $item['item_id'], $item['quantity'], $item['unit_price']]);
+        $item_id = $item['item_id'];
+        $quantity = $item['quantity'] ?? 1;
+        $unit_price = $item['unit_price'];
+
+        // Insert invoice item
+        $stmt_items->execute([$school_id, $invoice_id, $item_id, $quantity, $unit_price]);
+
+        // Track one-time and annual fees (skip if item_id is 0 - transport/activities)
+        if ($item_id > 0) {
+            $stmt_check_fee_type->execute([$item_id]);
+            $fee_frequency = $stmt_check_fee_type->fetchColumn();
+
+            if ($fee_frequency === 'one_time') {
+                $stmt_track_onetime->execute([
+                    $school_id,
+                    $student_id,
+                    $item_id,
+                    $invoice_id,
+                    $current_academic_year,
+                    $invoice_date,
+                    $quantity * $unit_price
+                ]);
+            } elseif ($fee_frequency === 'annual') {
+                $stmt_track_annual->execute([
+                    $school_id,
+                    $student_id,
+                    $item_id,
+                    $invoice_id,
+                    $current_academic_year,
+                    $invoice_date,
+                    $quantity * $unit_price
+                ]);
+            }
+        }
     }
 
     // 5. The Accounting Logic (Journal Entry)
