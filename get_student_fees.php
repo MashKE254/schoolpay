@@ -44,27 +44,109 @@ if (!$class_id || !$academic_year || !$term) {
 }
 
 try {
-    // 1. Get all fee structure items for that class and term (No longer need to fetch student's class first)
+    // 1. Get all fee structure items for that class and term
     $stmt_fees = $pdo->prepare(
-        "SELECT fsi.*, i.name as item_name 
+        "SELECT fsi.*, i.name as item_name, i.fee_frequency
          FROM fee_structure_items fsi
          JOIN items i ON fsi.item_id = i.id
-         WHERE fsi.school_id = ? 
-           AND fsi.class_id = ? 
-           AND fsi.academic_year = ? 
+         WHERE fsi.school_id = ?
+           AND fsi.class_id = ?
+           AND fsi.academic_year = ?
            AND fsi.term = ?"
     );
     $stmt_fees->execute([$school_id, $class_id, $academic_year, $term]);
     $all_fees = $stmt_fees->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Separate into mandatory and optional fees (Logic remains the same)
+    // 2. Separate into mandatory and optional fees
     $mandatory_items = [];
     $optional_items = [];
+
     foreach ($all_fees as $fee) {
+        // Check if one-time fees have already been billed to this student
+        if ($fee['fee_frequency'] === 'one_time' && $student_id) {
+            $stmt_check = $pdo->prepare("SELECT id FROM one_time_fees_billed WHERE student_id=? AND item_id=?");
+            $stmt_check->execute([$student_id, $fee['item_id']]);
+            if ($stmt_check->fetch()) {
+                continue; // Skip - already billed
+            }
+        }
+
+        // Check if annual fees have already been billed for this academic year
+        if ($fee['fee_frequency'] === 'annual' && $student_id) {
+            $stmt_check = $pdo->prepare("SELECT id FROM annual_fees_billed WHERE student_id=? AND item_id=? AND academic_year=?");
+            $stmt_check->execute([$student_id, $fee['item_id'], $academic_year]);
+            if ($stmt_check->fetch()) {
+                continue; // Skip - already billed this year
+            }
+        }
+
         if ($fee['is_mandatory']) {
             $mandatory_items[] = $fee;
         } else {
             $optional_items[] = $fee;
+        }
+    }
+
+    // 3. Add student transport fee if assigned (MANDATORY)
+    if ($student_id) {
+        $stmt_transport = $pdo->prepare("
+            SELECT st.*, tz.zone_name, tz.round_trip_amount, tz.one_way_amount
+            FROM student_transport st
+            JOIN transport_zones tz ON st.transport_zone_id = tz.id
+            WHERE st.student_id = ?
+              AND st.school_id = ?
+              AND st.academic_year = ?
+              AND st.term = ?
+              AND st.status = 'active'
+        ");
+        $stmt_transport->execute([$student_id, $school_id, $academic_year, $term]);
+        $transport = $stmt_transport->fetch(PDO::FETCH_ASSOC);
+
+        if ($transport) {
+            $transport_amount = ($transport['trip_type'] === 'round_trip') ?
+                                 $transport['round_trip_amount'] :
+                                 $transport['one_way_amount'];
+
+            $mandatory_items[] = [
+                'item_id' => 0, // Special ID for transport
+                'item_name' => 'Transport - ' . $transport['zone_name'] . ' (' . ucwords(str_replace('_', ' ', $transport['trip_type'])) . ')',
+                'amount' => $transport_amount,
+                'quantity' => 1,
+                'is_mandatory' => 1,
+                'fee_frequency' => 'recurring',
+                'is_transport' => true,
+                'transport_id' => $transport['id']
+            ];
+        }
+    }
+
+    // 4. Add student enrolled activities (OPTIONAL - but auto-added)
+    if ($student_id) {
+        $stmt_activities = $pdo->prepare("
+            SELECT sa.*, a.activity_name, a.fee_per_term, a.category
+            FROM student_activities sa
+            JOIN activities a ON sa.activity_id = a.id
+            WHERE sa.student_id = ?
+              AND sa.school_id = ?
+              AND sa.academic_year = ?
+              AND sa.term = ?
+              AND sa.status = 'active'
+        ");
+        $stmt_activities->execute([$student_id, $school_id, $academic_year, $term]);
+        $activities = $stmt_activities->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($activities as $activity) {
+            $optional_items[] = [
+                'item_id' => 0, // Special ID for activities
+                'item_name' => 'Activity: ' . $activity['activity_name'] . ' (' . $activity['category'] . ')',
+                'amount' => $activity['fee_per_term'],
+                'quantity' => 1,
+                'is_mandatory' => 0, // Optional but enrolled
+                'fee_frequency' => 'recurring',
+                'is_activity' => true,
+                'activity_id' => $activity['activity_id'],
+                'enrollment_id' => $activity['id']
+            ];
         }
     }
 
