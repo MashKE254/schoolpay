@@ -130,10 +130,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         // --- Fee Structure Management ---
         elseif (isset($_POST['create_base_item'])) {
-            $stmt = $pdo->prepare("INSERT INTO items (school_id, name, description) VALUES (?, ?, ?)");
-            $stmt->execute([$school_id, trim($_POST['item_name']), trim($_POST['item_description'])]);
+            $fee_frequency = isset($_POST['fee_frequency']) ? $_POST['fee_frequency'] : 'recurring';
+            $stmt = $pdo->prepare("INSERT INTO items (school_id, name, description, fee_frequency) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$school_id, trim($_POST['item_name']), trim($_POST['item_description']), $fee_frequency]);
             $item_id = $pdo->lastInsertId();
-            log_audit($pdo, 'CREATE', 'items', $item_id, ['data' => ['name' => $_POST['item_name']]]);
+            log_audit($pdo, 'CREATE', 'items', $item_id, ['data' => ['name' => $_POST['item_name'], 'fee_frequency' => $fee_frequency]]);
             $_SESSION['success_message'] = "Base fee item created successfully.";
             $active_tab = 'fee_structure';
         } 
@@ -164,9 +165,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fee_id = intval($_POST['fee_id']);
             $amount = floatval($_POST['amount']);
             $is_mandatory = isset($_POST['is_mandatory']) ? 1 : 0;
-            
+            $fee_frequency = isset($_POST['fee_frequency']) ? $_POST['fee_frequency'] : 'recurring';
+
+            // Update the fee structure item (amount and mandatory status)
             $stmt = $pdo->prepare("UPDATE fee_structure_items SET amount = ?, is_mandatory = ? WHERE id = ? AND school_id = ?");
             $stmt->execute([$amount, $is_mandatory, $fee_id, $school_id]);
+
+            // Get the item_id from this fee structure record to update its fee_frequency
+            $stmt = $pdo->prepare("SELECT item_id FROM fee_structure_items WHERE id = ? AND school_id = ?");
+            $stmt->execute([$fee_id, $school_id]);
+            $item_id = $stmt->fetchColumn();
+
+            if ($item_id) {
+                // Update the base item's fee_frequency (this affects all classes using this item)
+                $stmt = $pdo->prepare("UPDATE items SET fee_frequency = ? WHERE id = ? AND school_id = ?");
+                $stmt->execute([$fee_frequency, $item_id, $school_id]);
+            }
+
             $_SESSION['success_message'] = "Fee item updated successfully.";
             $active_tab = 'fee_structure';
         }
@@ -855,7 +870,7 @@ $invoices = getInvoices($pdo, $school_id, $filter_invoice_student_id, $filter_in
 // Data for Fee Structure Tab
 $current_academic_year = $_GET['fs_year'] ?? date('Y') . '-' . (date('Y') + 1);
 $current_term = $_GET['fs_term'] ?? 'Term 1';
-$stmt_fee_structure = $pdo->prepare("SELECT fsi.*, i.name as item_name, c.name as class_name FROM fee_structure_items fsi JOIN items i ON fsi.item_id = i.id JOIN classes c ON fsi.class_id = c.id WHERE fsi.school_id = ? AND fsi.academic_year = ? AND fsi.term = ? ORDER BY c.name, fsi.is_mandatory DESC, i.name ASC");
+$stmt_fee_structure = $pdo->prepare("SELECT fsi.*, i.name as item_name, i.fee_frequency, c.name as class_name FROM fee_structure_items fsi JOIN items i ON fsi.item_id = i.id JOIN classes c ON fsi.class_id = c.id WHERE fsi.school_id = ? AND fsi.academic_year = ? AND fsi.term = ? ORDER BY c.name, fsi.is_mandatory DESC, i.name ASC");
 $stmt_fee_structure->execute([$school_id, $current_academic_year, $current_term]);
 $fee_structure_items_raw = $stmt_fee_structure->fetchAll(PDO::FETCH_ASSOC);
 $fee_structure_by_class = [];
@@ -1486,42 +1501,100 @@ function switchTab(tabId) {
                         <div class="accordion-item">
                             <button type="button" class="accordion-header">
                                 <?= htmlspecialchars($class_fees['name']) ?>
-                                <span class="total-fees">Mandatory Total: $<?= number_format($total_mandatory_fee, 2) ?></span>
+                                <span class="total-fees">Mandatory Total: KSH <?= number_format($total_mandatory_fee, 2) ?></span>
                             </button>
                             <div class="accordion-content">
                                 <h4>Mandatory Fees</h4>
-                                <table class="table">
-                                    <?php foreach ($class_fees['items'] as $item): if ($item['is_mandatory']): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($item['item_name']) ?></td>
-                                        <td class="amount">$<?= number_format($item['amount'], 2) ?></td>
-                                        <td>
-                                            <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
-                                            <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
-                                                <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
-                                                <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    <?php endif; endforeach; ?>
-                                </table>
+                                <div class="table-container">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Fee Item</th>
+                                                <th>Frequency</th>
+                                                <th>Amount</th>
+                                                <th style="width: 100px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php
+                                            $has_mandatory = false;
+                                            foreach ($class_fees['items'] as $item):
+                                                if ($item['is_mandatory']):
+                                                    $has_mandatory = true;
+                                                    $fee_frequency = $item['fee_frequency'] ?? 'recurring';
+                                                    $frequency_badge_class = $fee_frequency === 'one_time' ? 'badge-warning' : ($fee_frequency === 'annual' ? 'badge-info' : 'badge-secondary');
+                                                    $frequency_label = ucfirst(str_replace('_', ' ', $fee_frequency));
+                                            ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($item['item_name']) ?></td>
+                                                <td><span class="badge <?= $frequency_badge_class ?>"><?= $frequency_label ?></span></td>
+                                                <td class="amount">KSH <?= number_format($item['amount'], 2) ?></td>
+                                                <td>
+                                                    <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
+                                                    <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
+                                                        <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
+                                                        <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                            <?php
+                                                endif;
+                                            endforeach;
+                                            if (!$has_mandatory):
+                                            ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted">No mandatory fees assigned</td>
+                                            </tr>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
 
                                 <h4 style="margin-top: 1.5rem;">Optional Fees</h4>
-                                <table class="table">
-                                    <?php foreach ($class_fees['items'] as $item): if (!$item['is_mandatory']): ?>
-                                     <tr>
-                                        <td><?= htmlspecialchars($item['item_name']) ?></td>
-                                        <td class="amount">$<?= number_format($item['amount'], 2) ?></td>
-                                        <td>
-                                            <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
-                                            <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
-                                                <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
-                                                <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    <?php endif; endforeach; ?>
-                                </table>
+                                <div class="table-container">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Fee Item</th>
+                                                <th>Frequency</th>
+                                                <th>Amount</th>
+                                                <th style="width: 100px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php
+                                            $has_optional = false;
+                                            foreach ($class_fees['items'] as $item):
+                                                if (!$item['is_mandatory']):
+                                                    $has_optional = true;
+                                                    $fee_frequency = $item['fee_frequency'] ?? 'recurring';
+                                                    $frequency_badge_class = $fee_frequency === 'one_time' ? 'badge-warning' : ($fee_frequency === 'annual' ? 'badge-info' : 'badge-secondary');
+                                                    $frequency_label = ucfirst(str_replace('_', ' ', $fee_frequency));
+                                            ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($item['item_name']) ?></td>
+                                                <td><span class="badge <?= $frequency_badge_class ?>"><?= $frequency_label ?></span></td>
+                                                <td class="amount">KSH <?= number_format($item['amount'], 2) ?></td>
+                                                <td>
+                                                    <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
+                                                    <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
+                                                        <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
+                                                        <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                            <?php
+                                                endif;
+                                            endforeach;
+                                            if (!$has_optional):
+                                            ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted">No optional fees assigned</td>
+                                            </tr>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -2161,8 +2234,93 @@ function switchTab(tabId) {
 <div id="addPromiseModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Record a Payment Promise</h3><span class="close" onclick="closeModal('addPromiseModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="students"><input type="hidden" name="add_promise" value="1"><input type="hidden" name="promise_student_id" id="promise_student_id"><input type="hidden" name="promise_invoice_id" id="promise_invoice_id"><div class="modal-body"><p>For Invoice #<strong id="promise_invoice_id_display"></strong></p><div class="form-group"><label for="promised_amount">Promised Amount</label><input type="number" name="promised_amount" id="promised_amount" step="0.01" required class="form-control"></div><div class="form-group"><label for="promised_due_date">Promised Payment Date</label><input type="date" name="promised_due_date" id="promised_due_date" required class="form-control"></div><div class="form-group"><label for="promise_date">Date of Promise</label><input type="date" name="promise_date" id="promise_date" value="<?= date('Y-m-d') ?>" required class="form-control"></div><div class="form-group"><label for="notes">Notes</label><textarea name="notes" id="notes" rows="3" class="form-control" placeholder="e.g., Spoke with parent on the phone."></textarea></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('addPromiseModal')">Cancel</button><button type="submit" class="btn-primary">Save Promise</button></div></form></div></div>
 
 <div id="assignFeeItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Assign Fee Item to Class(es)</h3><span class="close" onclick="closeModal('assignFeeItemModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="assign_fee_item" value="1"><input type="hidden" name="academic_year" value="<?= htmlspecialchars($current_academic_year) ?>"><input type="hidden" name="term" value="<?= htmlspecialchars($current_term) ?>"><div class="modal-body"><div class="form-grid"><div class="form-group"><label>Academic Year</label><input type="text" value="<?= htmlspecialchars($current_academic_year) ?>" class="form-control" readonly></div><div class="form-group"><label>Term</label><input type="text" value="<?= htmlspecialchars($current_term) ?>" class="form-control" readonly></div></div><div class="form-group"><label for="assign_item_id">Fee Item</label><select name="item_id" id="assign_item_id" required class="form-control"><option value="">-- Select Base Item --</option><?php foreach($base_items as $item): ?><option value="<?= $item['id'] ?>"><?= htmlspecialchars($item['name']) ?></option><?php endforeach; ?></select></div><div class="form-group"><label for="assign_amount">Amount</label><input type="number" name="amount" id="assign_amount" step="0.01" required class="form-control"></div><div class="form-group"><label for="assign_class_ids">Assign to Classes</label><div class="class-checkbox-group"><?php foreach($all_classes_for_dropdown as $class): ?><label><input type="checkbox" name="class_ids[]" value="<?= $class['id'] ?>"> <?= htmlspecialchars($class['name']) ?></label><?php endforeach; ?></div></div><div class="form-group"><label><input type="checkbox" name="is_mandatory" value="1" checked> This fee is mandatory</label></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('assignFeeItemModal')">Cancel</button><button type="submit" class="btn-primary">Assign to Class(es)</button></div></form></div></div>
-<div id="editFeeItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Edit Assigned Fee</h3><span class="close" onclick="closeModal('editFeeItemModal')">&times;</span></div><form id="editFeeForm" method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="update_fee_item" value="1"><input type="hidden" name="fee_id" id="edit_fee_id"><div class="modal-body"><p><strong>Class:</strong> <span id="edit_fee_class_name"></span></p><p><strong>Item:</strong> <span id="edit_fee_item_name"></span></p><div class="form-group"><label for="edit_fee_amount">Amount</label><input type="number" name="amount" id="edit_fee_amount" step="0.01" required class="form-control"></div><div class="form-group"><label><input type="checkbox" name="is_mandatory" id="edit_fee_is_mandatory" value="1"> This fee is mandatory</label></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('editFeeItemModal')">Cancel</button><button type="submit" class="btn-primary">Update Fee</button></div></form></div></div>
-<div id="createBaseItemModal" class="modal"><div class="modal-content"><div class="modal-header"><h3>Create New Base Item</h3><span class="close" onclick="closeModal('createBaseItemModal')">&times;</span></div><form method="post"><input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="create_base_item" value="1"><div class="modal-body"><p>Create a generic fee item (e.g., "Tuition Fee", "Transport - Zone C"). You can assign prices to it for different classes later.</p><div class="form-group"><label for="item_name">Item Name</label><input type="text" name="item_name" id="item_name" required class="form-control"></div><div class="form-group"><label for="item_description">Description</label><textarea name="item_description" id="item_description" rows="2" class="form-control"></textarea></div></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('createBaseItemModal')">Cancel</button><button type="submit" class="btn-primary">Create Item</button></div></form></div></div>
+<div id="editFeeItemModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Edit Assigned Fee</h3>
+            <span class="close" onclick="closeModal('editFeeItemModal')">&times;</span>
+        </div>
+        <form id="editFeeForm" method="post">
+            <input type="hidden" name="active_tab" value="fee_structure">
+            <input type="hidden" name="update_fee_item" value="1">
+            <input type="hidden" name="fee_id" id="edit_fee_id">
+            <div class="modal-body">
+                <div class="form-group">
+                    <p><strong>Class:</strong> <span id="edit_fee_class_name"></span></p>
+                    <p><strong>Item:</strong> <span id="edit_fee_item_name"></span></p>
+                </div>
+                <div class="form-group">
+                    <label for="edit_fee_amount">Amount (KSH)</label>
+                    <input type="number" name="amount" id="edit_fee_amount" step="0.01" required class="form-control">
+                </div>
+                <div class="form-group">
+                    <label for="edit_fee_frequency">Fee Frequency</label>
+                    <select name="fee_frequency" id="edit_fee_frequency" class="form-control" required>
+                        <option value="recurring">Recurring (Every Term)</option>
+                        <option value="one_time">One-Time (Lifetime)</option>
+                        <option value="annual">Annual (Once per Year)</option>
+                    </select>
+                    <small class="text-muted">
+                        <strong>⚠️ Note:</strong> Changing fee frequency updates the base item and affects all classes using this item.<br>
+                        • <strong>Recurring:</strong> Charged every term (e.g., Tuition, Lunch)<br>
+                        • <strong>One-Time:</strong> Charged only once per student (e.g., Admission Fee)<br>
+                        • <strong>Annual:</strong> Charged once per academic year (e.g., Insurance)
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="is_mandatory" id="edit_fee_is_mandatory" value="1">
+                        This fee is mandatory
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeModal('editFeeItemModal')">Cancel</button>
+                <button type="submit" class="btn-primary">Update Fee</button>
+            </div>
+        </form>
+    </div>
+</div>
+<div id="createBaseItemModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Create New Base Item</h3>
+            <span class="close" onclick="closeModal('createBaseItemModal')">&times;</span>
+        </div>
+        <form method="post">
+            <input type="hidden" name="active_tab" value="fee_structure">
+            <input type="hidden" name="create_base_item" value="1">
+            <div class="modal-body">
+                <p class="text-muted">Create a generic fee item (e.g., "Tuition Fee", "Transport - Zone C"). You can assign prices to it for different classes later.</p>
+                <div class="form-group">
+                    <label for="item_name" class="required">Item Name</label>
+                    <input type="text" name="item_name" id="item_name" required class="form-control" placeholder="e.g., Tuition Fee">
+                </div>
+                <div class="form-group">
+                    <label for="item_description">Description</label>
+                    <textarea name="item_description" id="item_description" rows="2" class="form-control" placeholder="Optional description"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="item_fee_frequency" class="required">Fee Frequency</label>
+                    <select name="fee_frequency" id="item_fee_frequency" class="form-control" required>
+                        <option value="recurring" selected>Recurring (Every Term)</option>
+                        <option value="one_time">One-Time (Lifetime)</option>
+                        <option value="annual">Annual (Once per Year)</option>
+                    </select>
+                    <small class="text-muted">
+                        <strong>Recurring:</strong> Charged every term (e.g., Tuition, Lunch)<br>
+                        <strong>One-Time:</strong> Charged only once per student (e.g., Admission Fee, Diary)<br>
+                        <strong>Annual:</strong> Charged once per academic year (e.g., Insurance)
+                    </small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeModal('createBaseItemModal')">Cancel</button>
+                <button type="submit" class="btn-primary"><i class="fas fa-plus"></i> Create Item</button>
+            </div>
+        </form>
+    </div>
+</div>
 
 <div id="sendMessageModal" class="modal">
     <div class="modal-content">
@@ -2393,6 +2551,11 @@ function openEditFeeModal(feeData) {
     document.getElementById('edit_fee_item_name').textContent = feeData.item_name;
     document.getElementById('edit_fee_amount').value = parseFloat(feeData.amount).toFixed(2);
     document.getElementById('edit_fee_is_mandatory').checked = (feeData.is_mandatory == 1);
+
+    // Set fee frequency (default to recurring if not set)
+    const feeFrequency = feeData.fee_frequency || 'recurring';
+    document.getElementById('edit_fee_frequency').value = feeFrequency;
+
     openModal('editFeeItemModal');
 }
 function openEditTemplateModal(template) {

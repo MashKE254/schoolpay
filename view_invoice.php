@@ -1,4 +1,7 @@
 <?php
+// Start output buffering to prevent "headers already sent" errors
+ob_start();
+
 require_once 'config.php';
 require_once 'functions.php';
 
@@ -6,6 +9,63 @@ require_once 'functions.php';
 $token = $_GET['token'] ?? null;
 $invoice = null;
 $school_id_from_token = null;
+$is_logged_in = false;
+
+// Handle delete item request
+if (isset($_POST['delete_item']) && isset($_POST['item_id']) && !$token) {
+    session_start();
+    if (isset($_SESSION['school_id'])) {
+        $is_logged_in = true;
+        $school_id = $_SESSION['school_id'];
+        $item_id = intval($_POST['item_id']);
+        $invoice_id = intval($_POST['invoice_id']);
+
+        try {
+            $pdo->beginTransaction();
+
+            // Verify the item belongs to this school's invoice
+            $stmt_verify = $pdo->prepare("
+                SELECT ii.*, i.school_id
+                FROM invoice_items ii
+                JOIN invoices i ON ii.invoice_id = i.id
+                WHERE ii.id = ? AND i.school_id = ?
+            ");
+            $stmt_verify->execute([$item_id, $school_id]);
+            $item = $stmt_verify->fetch(PDO::FETCH_ASSOC);
+
+            if ($item) {
+                // Delete the item
+                $stmt_delete = $pdo->prepare("DELETE FROM invoice_items WHERE id = ?");
+                $stmt_delete->execute([$item_id]);
+
+                // Recalculate invoice total
+                $stmt_total = $pdo->prepare("
+                    SELECT COALESCE(SUM(quantity * unit_price), 0) as total
+                    FROM invoice_items
+                    WHERE invoice_id = ?
+                ");
+                $stmt_total->execute([$invoice_id]);
+                $new_total = $stmt_total->fetchColumn();
+
+                // Update invoice total
+                $stmt_update = $pdo->prepare("UPDATE invoices SET total_amount = ? WHERE id = ?");
+                $stmt_update->execute([$new_total, $invoice_id]);
+
+                $pdo->commit();
+                $_SESSION['success_message'] = "Item deleted successfully. Invoice total updated.";
+            }
+
+            header("Location: view_invoice.php?id=" . $invoice_id);
+            exit();
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['error_message'] = "Error deleting item: " . $e->getMessage();
+            header("Location: view_invoice.php?id=" . $invoice_id);
+            exit();
+        }
+    }
+}
 
 if ($token) {
     // A token is provided, try to fetch the invoice publicly
@@ -16,7 +76,7 @@ if ($token) {
     if ($invoice_data) {
         $invoice_id = $invoice_data['id'];
         // This is the key fix: get the school_id directly from the initial query
-        $school_id_from_token = $invoice_data['school_id']; 
+        $school_id_from_token = $invoice_data['school_id'];
         // Now use the existing function to get all details
         $invoice = getInvoiceDetails($pdo, $invoice_id, $school_id_from_token);
     }
@@ -24,6 +84,7 @@ if ($token) {
     // --- Fallback to Original Session-based Logic ---
     session_start();
     if (isset($_SESSION['school_id'])) {
+        $is_logged_in = true;
         $school_id_from_session = $_SESSION['school_id'];
         $invoice_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
         if ($invoice_id) {
@@ -141,6 +202,8 @@ if ($balance <= 0.01) {
         @media print {
             body { background-color: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .invoice-container { margin: 0; border: none; box-shadow: none; max-width: 100%; }
+            .btn-icon-delete, .alert { display: none !important; }
+            .items-table th:last-child, .items-table td:last-child { display: none !important; }
         }
 
         /* Responsive styles for mobile */
@@ -173,17 +236,51 @@ if ($balance <= 0.01) {
             <div><h4>Due Date</h4><p><?php echo date('F j, Y', strtotime($invoice['due_date'])); ?></p></div>
         </section>
 
+        <?php if ($is_logged_in && isset($_SESSION['success_message'])): ?>
+            <div class="alert alert-success" style="margin-bottom: 1.5rem; padding: 1rem; background-color: #dcfce7; color: #166534; border-radius: 0.5rem; border: 1px solid #86efac;">
+                <i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($_SESSION['success_message']); unset($_SESSION['success_message']); ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($is_logged_in && isset($_SESSION['error_message'])): ?>
+            <div class="alert alert-danger" style="margin-bottom: 1.5rem; padding: 1rem; background-color: #fee2e2; color: #991b1b; border-radius: 0.5rem; border: 1px solid #fca5a5;">
+                <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($_SESSION['error_message']); unset($_SESSION['error_message']); ?>
+            </div>
+        <?php endif; ?>
+
         <section>
             <div style="overflow-x: auto;">
                 <table class="items-table">
-                    <thead><tr><th>Item</th><th class="text-right">Qty</th><th class="text-right">Rate</th><th class="text-right">Amount</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Item</th>
+                            <th class="text-right">Qty</th>
+                            <th class="text-right">Rate</th>
+                            <th class="text-right">Amount</th>
+                            <?php if ($is_logged_in): ?>
+                            <th class="text-right" style="width: 80px;">Action</th>
+                            <?php endif; ?>
+                        </tr>
+                    </thead>
                     <tbody>
                         <?php foreach ($invoice['items'] as $item): ?>
                         <tr>
                             <td><div class="item-name"><?php echo htmlspecialchars($item['item_name']); ?></div></td>
                             <td class="text-right"><?php echo htmlspecialchars($item['quantity']); ?></td>
-                            <td class="text-right">$<?php echo number_format($item['unit_price'], 2); ?></td>
-                            <td class="text-right">$<?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?></td>
+                            <td class="text-right">KSH <?php echo number_format($item['unit_price'], 2); ?></td>
+                            <td class="text-right">KSH <?php echo number_format($item['quantity'] * $item['unit_price'], 2); ?></td>
+                            <?php if ($is_logged_in): ?>
+                            <td class="text-right">
+                                <form method="post" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this item from the invoice? This will recalculate the total.');">
+                                    <input type="hidden" name="delete_item" value="1">
+                                    <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
+                                    <input type="hidden" name="invoice_id" value="<?php echo $invoice['id']; ?>">
+                                    <button type="submit" class="btn-icon-delete" title="Delete Item" style="background: none; border: none; color: #dc2626; cursor: pointer; font-size: 1rem; padding: 0.25rem 0.5rem;">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </form>
+                            </td>
+                            <?php endif; ?>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -193,13 +290,20 @@ if ($balance <= 0.01) {
 
         <section class="invoice-summary">
             <div class="summary-box">
-                <div class="summary-line"><span>Subtotal</span><span>$<?php echo number_format($invoice['total_amount'], 2); ?></span></div>
-                <div class="summary-line"><span>Total Paid</span><span>-$<?php echo number_format($invoice['total_paid'], 2); ?></span></div>
-                <div class="summary-line balance-due"><span>Balance Due</span><span>$<?php echo number_format($invoice['balance_due'], 2); ?></span></div>
+                <div class="summary-line"><span>Subtotal</span><span>KSH <?php echo number_format($invoice['total_amount'], 2); ?></span></div>
+                <div class="summary-line"><span>Total Paid</span><span>-KSH <?php echo number_format($invoice['total_paid'], 2); ?></span></div>
+                <div class="summary-line balance-due"><span>Balance Due</span><span>KSH <?php echo number_format($invoice['balance_due'], 2); ?></span></div>
             </div>
         </section>
+
+        <?php if ($is_logged_in && count($invoice['items']) === 0): ?>
+            <div class="alert alert-warning" style="margin-top: 1.5rem; padding: 1rem; background-color: #fef3c7; color: #92400e; border-radius: 0.5rem; border: 1px solid #fcd34d;">
+                <i class="fas fa-exclamation-triangle"></i> <strong>Warning:</strong> This invoice has no items. Please add items or delete the invoice.
+            </div>
+        <?php endif; ?>
     </div>
 </div>
 <?php if (!$token): include 'footer.php'; endif; // Only show footer if logged in ?>
+<?php if (ob_get_level() > 0) ob_end_flush(); ?>
 </body>
 </html>
