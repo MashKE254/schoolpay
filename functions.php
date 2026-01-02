@@ -379,8 +379,8 @@ function getStudentTransactions($pdo, $student_id, $school_id) {
 // =================================================================
 
 function getInvoices(PDO $pdo, int $school_id, $student_id = null, ?string $status = null, ?string $start_date = null, ?string $end_date = null): array {
-    $sql = "SELECT 
-                i.id, i.invoice_date, i.due_date, i.total_amount, i.amount_paid, i.status, s.name as student_name
+    $sql = "SELECT
+                i.id, i.invoice_date, i.due_date, i.total_amount, i.paid_amount, i.status, s.name as student_name
             FROM invoices i
             JOIN students s ON i.student_id = s.id
             WHERE i.school_id = :school_id";
