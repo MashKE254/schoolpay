@@ -1782,234 +1782,63 @@ function switchTab(tabId) {
 
     <div class="fixed inset-0 z-10 overflow-y-auto">
         <div class="flex min-h-full items-center justify-center p-4 text-center sm:p-0">
-            <div class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-5xl my-8">
+            <div class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-lg my-8">
                 
-                <div class="bg-white px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 z-20">
+                <div class="bg-white px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                     <div>
                         <h3 class="text-xl font-bold text-gray-900 flex items-center gap-2">
                             <i class="fas fa-user-plus text-blue-600"></i> Add New Student
                         </h3>
-                        <p class="text-sm text-gray-500 mt-1">Fill in the details below. Student ID will be generated automatically.</p>
+                        <p class="text-sm text-gray-500 mt-1">Quick student registration</p>
                     </div>
                     <button onclick="closeModal('addStudentModal')" class="text-gray-400 hover:text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full p-2 transition-colors">
-                        <i class="fas fa-times text-lg w-5 h-5 flex items-center justify-center"></i>
+                        <i class="fas fa-times text-lg"></i>
                     </button>
                 </div>
 
-                <form method="post" class="flex flex-col md:flex-row h-[75vh]">
+                <form method="post">
                     <input type="hidden" name="active_tab" value="students">
                     <input type="hidden" name="addStudent" value="1">
 
-                    <div class="w-full md:w-64 bg-gray-50 border-r border-gray-200 p-4 flex flex-col gap-2 overflow-y-auto">
-                        <button type="button" onclick="switchTab('add', 'personal')" class="tab-btn-add active text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="personal">
-                            <i class="fas fa-user w-5"></i> Personal Info
-                        </button>
-                        <button type="button" onclick="switchTab('add', 'parents')" class="tab-btn-add text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="parents">
-                            <i class="fas fa-users w-5"></i> Parents/Guardian
-                        </button>
-                        <button type="button" onclick="switchTab('add', 'medical')" class="tab-btn-add text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="medical">
-                            <i class="fas fa-heartbeat w-5"></i> Medical
-                        </button>
-                        <button type="button" onclick="switchTab('add', 'transport')" class="tab-btn-add text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="transport">
-                            <i class="fas fa-bus w-5"></i> Transport
-                        </button>
-                        <button type="button" onclick="switchTab('add', 'other')" class="tab-btn-add text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="other">
-                            <i class="fas fa-info-circle w-5"></i> Other
-                        </button>
+                    <div class="p-6 space-y-5">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Student Name <span class="text-red-500">*</span></label>
+                            <input type="text" name="first_name" required
+                                   class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="Enter full name"
+                                   autocomplete="off">
+                            <p class="mt-1 text-xs text-gray-500">Enter the student's full name</p>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Class <span class="text-red-500">*</span></label>
+                            <select name="class_id" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500">
+                                <option value="">Select Class</option>
+                                <?php foreach ($all_classes_for_dropdown as $class): ?>
+                                    <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Parent's Phone Number <span class="text-red-500">*</span></label>
+                            <input type="tel" name="father_contact" required
+                                   class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="+254712345678"
+                                   pattern="[0-9+]+"
+                                   autocomplete="tel">
+                            <p class="mt-1 text-xs text-gray-500">Primary contact number for invoices and notifications</p>
+                        </div>
                     </div>
 
-                    <div class="flex-1 overflow-y-auto p-6 bg-white relative">
-                        
-                        <div id="add-personal" class="tab-content-add space-y-6">
-                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Basic Information</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">First Name <span class="text-red-500">*</span></label>
-                                    <input type="text" name="first_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="First Name">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Middle Name</label>
-                                    <input type="text" name="middle_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="Middle Name">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Last Name <span class="text-red-500">*</span></label>
-                                    <input type="text" name="last_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="Last Name">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">NEMIS No.</label>
-                                    <input type="text" name="nemis_no" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="NEMIS">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Class <span class="text-red-500">*</span></label>
-                                    <select name="class_id" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                        <option value="">Select Class</option>
-                                        <?php foreach ($all_classes_for_dropdown as $class): ?>
-                                            <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Gender</label>
-                                    <select name="gender" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                        <option value="">Select</option>
-                                        <option value="male">Male</option>
-                                        <option value="female">Female</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Date of Birth</label>
-                                    <input type="date" name="date_of_birth" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Nationality</label>
-                                    <input type="text" name="nationality" value="Kenyan" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Religion</label>
-                                    <input type="text" name="religion" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                            </div>
-                        </div>
-
-                        <div id="add-parents" class="tab-content-add hidden space-y-8">
-                            <div class="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-                                <h4 class="text-sm font-bold text-blue-900 uppercase tracking-wider mb-4 flex items-center gap-2">
-                                    <i class="fas fa-male"></i> Father's Information <span class="text-xs normal-case font-normal text-red-500 ml-2">(Required)</span>
-                                </h4>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-4">
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">First Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="father_first_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Middle Name</label>
-                                        <input type="text" name="father_middle_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Last Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="father_last_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Phone Number <span class="text-red-500">*</span></label>
-                                        <input type="text" name="father_contact" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="+254...">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Email Address</label>
-                                        <input type="email" name="father_email" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="p-4 rounded-xl border border-gray-200">
-                                <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider mb-4 flex items-center gap-2">
-                                    <i class="fas fa-female"></i> Mother's Information
-                                </h4>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-4">
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">First Name</label>
-                                        <input type="text" name="mother_first_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Middle Name</label>
-                                        <input type="text" name="mother_middle_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Last Name</label>
-                                        <input type="text" name="mother_last_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Phone Number</label>
-                                        <input type="text" name="mother_contact" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="+254...">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-700 mb-1">Email Address</label>
-                                        <input type="email" name="mother_email" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div id="add-medical" class="tab-content-add hidden space-y-6">
-                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Medical History</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Doctor's Name</label>
-                                    <input type="text" name="doctor_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Doctor's Contact</label>
-                                    <input type="text" name="doctor_contact" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Hospital</label>
-                                    <input type="text" name="preferred_hospital" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-1 gap-5">
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Known Allergies</label>
-                                    <textarea name="allergies" rows="3" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm"></textarea>
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Long-term Conditions</label>
-                                    <textarea name="long_term_condition" rows="3" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm"></textarea>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div id="add-transport" class="tab-content-add hidden space-y-6">
-                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Transport Logistics</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Transport Zone</label>
-                                    <input type="text" name="transport_zone" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Trip Type</label>
-                                    <select name="trip" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                        <option value="none">No Transport</option>
-                                        <option value="both">Two Way (Morning & Evening)</option>
-                                        <option value="morning">Morning Only</option>
-                                        <option value="evening">Evening Only</option>
-                                    </select>
-                                </div>
-                                <div class="md:col-span-2">
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Pickup / Drop-off Point</label>
-                                    <input type="text" name="picking_point" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                            </div>
-                        </div>
-
-                         <div id="add-other" class="tab-content-add hidden space-y-6">
-                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Additional Info</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Sponsor Name</label>
-                                    <input type="text" name="sponsor" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Sponsor Contact</label>
-                                    <input type="text" name="sponsor_contact" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
-                                </div>
-                                <div class="md:col-span-2">
-                                    <label class="block text-xs font-medium text-gray-700 mb-1">Dietary Requirements</label>
-                                    <input type="text" name="food_preference" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="e.g. Vegetarian, Halal">
-                                </div>
-                            </div>
-                        </div>
-
-                    </div>
-
-                    <div class="bg-gray-50 border-t border-gray-200 p-4  justify-end gap-3 sticky bottom-0 z-20">
-                        <button type="button" onclick="closeModal('addStudentModal')" class="px-5 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors">
+                    <div class="bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end gap-3">
+                        <button type="button" onclick="closeModal('addStudentModal')"
+                                class="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors">
                             Cancel
                         </button>
-                        <button type="submit" class="px-5 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 shadow-sm transition-colors flex items-center gap-2">
-                            <i class="fas fa-save"></i> Save Student
+                        <button type="submit"
+                                class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 shadow-sm transition-colors flex items-center gap-2">
+                            <i class="fas fa-save"></i> Add Student
                         </button>
                     </div>
                 </form>
@@ -2222,8 +2051,7 @@ function switchTab(tabId) {
     
     function openModal(id) {
         document.getElementById(id).classList.remove('hidden');
-        // Reset tabs when opening
-        if(id === 'addStudentModal') switchTab('add', 'personal');
+        // Reset tabs when opening edit modal
         if(id === 'editStudentModal') switchTab('edit', 'personal');
     }
 </script>
