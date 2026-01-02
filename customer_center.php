@@ -888,133 +888,8 @@ $message_templates = [
     "Parent-Teacher Meeting" => "Greetings from [school_name]. We invite you to a Parent-Teacher meeting on [Date] at [Time] to discuss [student_name]'s academic progress. We look forward to seeing you.",
 ];
 
-// --- DASHBOARD METRICS ---
-// Helper function to render stat cards
-function renderStatCard($title, $value, $trend = null, $subtitle = '') {
-    $trendHtml = '';
-    if ($trend !== null) {
-        $isPositive = $trend >= 0;
-        $trendClass = $isPositive ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
-        $trendSign = $isPositive ? '+' : '';
-        $trendHtml = '<span class="text-xs px-2 py-0.5 rounded-full ' . $trendClass . '">' . $trendSign . number_format($trend, 1) . '%</span>';
-    }
-    return '
-    <div class="bg-white rounded-xl border border-zinc-200 p-5 hover:shadow-md transition-shadow">
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-sm text-zinc-500">' . htmlspecialchars($title) . '</span>
-        ' . $trendHtml . '
-      </div>
-      <div class="text-2xl font-bold text-zinc-900">' . $value . '</div>
-      <p class="text-xs text-zinc-500 mt-1">' . htmlspecialchars($subtitle) . '</p>
-    </div>';
-}
-
-// Calculate metrics for Students tab
-$stmt_student_metrics = $pdo->prepare("
-    SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(CASE WHEN created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as new_this_month,
-        SUM(CASE WHEN created_at >= DATE_SUB(CURDATE(), INTERVAL 60 DAY) AND created_at < DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as new_last_month
-    FROM students WHERE school_id = ?
-");
-$stmt_student_metrics->execute([$school_id]);
-$student_metrics = $stmt_student_metrics->fetch(PDO::FETCH_ASSOC);
-
-$stmt_student_balance = $pdo->prepare("
-    SELECT COALESCE(SUM(total_amount - amount_paid), 0) as outstanding
-    FROM invoices WHERE school_id = ? AND status != 'Paid'
-");
-$stmt_student_balance->execute([$school_id]);
-$student_outstanding = $stmt_student_balance->fetchColumn();
-
-// Calculate trend for new students
-$student_trend = null;
-if ($student_metrics['new_last_month'] > 0) {
-    $student_trend = (($student_metrics['new_this_month'] - $student_metrics['new_last_month']) / $student_metrics['new_last_month']) * 100;
-}
-
-// Calculate metrics for Classes tab
-$stmt_class_metrics = $pdo->prepare("
-    SELECT COUNT(*) as total_classes FROM classes WHERE school_id = ? AND is_archived = 0
-");
-$stmt_class_metrics->execute([$school_id]);
-$total_classes = $stmt_class_metrics->fetchColumn();
-
-$avg_class_size = $student_metrics['active'] > 0 && $total_classes > 0
-    ? round($student_metrics['active'] / $total_classes, 1)
-    : 0;
-
-// Calculate collection rate
-$stmt_collection = $pdo->prepare("
-    SELECT
-        COALESCE(SUM(total_amount), 0) as total_invoiced,
-        COALESCE(SUM(amount_paid), 0) as total_paid
-    FROM invoices WHERE school_id = ?
-");
-$stmt_collection->execute([$school_id]);
-$collection = $stmt_collection->fetch(PDO::FETCH_ASSOC);
-$collection_rate = $collection['total_invoiced'] > 0
-    ? round(($collection['total_paid'] / $collection['total_invoiced']) * 100, 1)
-    : 0;
-
-// Calculate metrics for Invoices tab
-$stmt_invoice_metrics = $pdo->prepare("
-    SELECT
-        COALESCE(SUM(total_amount), 0) as total_invoiced,
-        COUNT(CASE WHEN status = 'Paid' THEN 1 END) as paid_count,
-        COUNT(CASE WHEN status IN ('Unpaid', 'Partially Paid') THEN 1 END) as pending_count,
-        COUNT(CASE WHEN status = 'Overdue' OR (status != 'Paid' AND due_date < CURDATE()) THEN 1 END) as overdue_count,
-        COALESCE(SUM(CASE WHEN status = 'Paid' THEN total_amount ELSE 0 END), 0) as paid_amount,
-        COALESCE(SUM(CASE WHEN status IN ('Unpaid', 'Partially Paid') THEN (total_amount - amount_paid) ELSE 0 END), 0) as pending_amount
-    FROM invoices WHERE school_id = ?
-");
-$stmt_invoice_metrics->execute([$school_id]);
-$invoice_metrics = $stmt_invoice_metrics->fetch(PDO::FETCH_ASSOC);
-
-// Calculate metrics for Fee Structure tab
-$stmt_fee_metrics = $pdo->prepare("
-    SELECT
-        COUNT(DISTINCT i.id) as total_items,
-        COUNT(CASE WHEN fsi.is_mandatory = 1 THEN 1 END) as mandatory_count,
-        COUNT(CASE WHEN fsi.is_mandatory = 0 THEN 1 END) as optional_count,
-        COALESCE(SUM(fsi.amount), 0) as total_fees
-    FROM items i
-    LEFT JOIN fee_structure_items fsi ON i.id = fsi.item_id AND fsi.school_id = ? AND fsi.academic_year = ? AND fsi.term = ?
-    WHERE i.school_id = ?
-");
-$stmt_fee_metrics->execute([$school_id, $current_academic_year, $current_term, $school_id]);
-$fee_metrics = $stmt_fee_metrics->fetch(PDO::FETCH_ASSOC);
-
-// Calculate metrics for Payments/Receipts tab
-$stmt_payment_metrics = $pdo->prepare("
-    SELECT
-        COALESCE(SUM(CASE WHEN DATE(payment_date) = CURDATE() THEN amount ELSE 0 END), 0) as today,
-        COALESCE(SUM(CASE WHEN payment_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN amount ELSE 0 END), 0) as this_month,
-        COALESCE(SUM(CASE WHEN payment_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY) AND payment_date < DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN amount ELSE 0 END), 0) as last_month,
-        COALESCE(SUM(amount), 0) as total_collected,
-        COUNT(*) as total_receipts,
-        COUNT(CASE WHEN payment_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as receipts_this_month
-    FROM payment_receipts WHERE school_id = ?
-");
-$stmt_payment_metrics->execute([$school_id]);
-$payment_metrics = $stmt_payment_metrics->fetch(PDO::FETCH_ASSOC);
-
-// Payment trend
-$payment_trend = null;
-if ($payment_metrics['last_month'] > 0) {
-    $payment_trend = (($payment_metrics['this_month'] - $payment_metrics['last_month']) / $payment_metrics['last_month']) * 100;
-}
-
 ?>
 <style>
-    /* Tab Display - Hide all tabs by default, show only active */
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-    .tab-pane { display: none; }
-    .tab-pane.active { display: block; }
-    .tab-link.active { background-color: #f3f4f6; color: #111827; }
-
     /* General Styles */
     .student-view-container { display: flex; min-height: 600px; border: 1px solid var(--border); overflow: hidden; position: relative; }
     .student-list-panel { width: 40%; min-width: 350px; flex-shrink: 0; overflow-y: auto; }
@@ -1068,7 +943,7 @@ if ($payment_metrics['last_month'] > 0) {
 <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-6">
     <div class="border-b border-gray-200">
         <nav class="flex flex-wrap gap-1 p-2" aria-label="Tabs">
-            <button class="tab-link active flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-all" onclick="openTab(event, 'students')">
+            <button class="tab-link flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-all" onclick="openTab(event, 'students')">
                 <i class="fas fa-users"></i> Students
             </button>
             <button class="tab-link flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-all" onclick="openTab(event, 'classes')">
@@ -1098,7 +973,190 @@ if ($payment_metrics['last_month'] > 0) {
         </nav>
     </div>
 
+<div id="students" class="tab-content h-full bg-white p-6 min-h-screen font-sans text-zinc-950">
+    
+    <div class="max-w-7xl mx-auto mb-8">
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+            <div>
+                <h2 class="text-2xl font-semibold tracking-tight">Students Directory</h2>
+                <p class="text-sm text-zinc-500">Manage student enrollment, status, and class assignments.</p>
+            </div>
+            <button onclick="openModal('addStudentModal')" class="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 shadow hover:bg-zinc-900/90 h-9 px-4 py-2 gap-2">
+                <i class="fas fa-plus text-xs"></i> Add New Student
+            </button>
+        </div>
 
+        <div class="flex flex-col md:flex-row gap-3 items-center">
+            <form method="get" class="flex flex-col md:flex-row w-full gap-3">
+                <input type="hidden" name="tab" value="students">
+                
+                <div class="relative flex-1">
+                    <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
+                    <input type="text" name="filter_name" value="<?= htmlspecialchars($filter_name) ?>" 
+                           class="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-9 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950" 
+                           placeholder="Search students...">
+                </div>
+
+                <select name="filter_class_id" class="h-9 w-full md:w-[180px] rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
+                    <option value="">All Classes</option>
+                    <?php foreach($all_classes_for_dropdown as $class): ?>
+                        <option value="<?= $class['id'] ?>" <?= ($filter_class_id == $class['id']) ? 'selected' : '' ?>><?= htmlspecialchars($class['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                
+                <select name="filter_status" class="h-9 w-full md:w-[150px] rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
+                    <option value="active" <?= ($filter_status == 'active') ? 'selected' : '' ?>>Active</option>
+                    <option value="inactive" <?= ($filter_status == 'inactive') ? 'selected' : '' ?>>Inactive</option>
+                    <option value="all" <?= ($filter_status == 'all') ? 'selected' : '' ?>>All Status</option>
+                </select>
+
+                <button type="submit" class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-zinc-200 bg-white shadow-sm hover:bg-zinc-100 h-9 px-4 py-2 transition-colors">
+                    Filter
+                </button>
+            </form>
+        </div>
+
+                        <div class="flex items-center justify-between px-4 py-3 bg-zinc-50/50 border-t border-zinc-200">
+                    <div class="flex items-center gap-2">
+                        <select name="bulk_action" class="h-8 w-[130px] rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
+                            <option value="">Bulk Actions</option>
+                            <option value="delete">Deactivate</option>
+                            <option value="activate">Activate</option>
+                        </select>
+                        <button type="submit" name="bulk_action_submit" class="h-8 px-3 rounded-md border border-zinc-200 bg-white text-xs font-medium hover:bg-zinc-100 transition-colors">
+                            Apply
+                        </button>
+                    </div>
+                    <p class="text-xs text-zinc-500"><?= count($students) ?> students found</p>
+                </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto">
+        <div class="rounded-md border border-zinc-200">
+            <form id="bulk-student-form" method="post">
+                <input type="hidden" name="active_tab" value="students">
+                
+                <div class="relative w-full overflow-auto">
+                    <table class="w-full caption-bottom text-sm">
+                        <thead class="[&_tr]:border-b bg-zinc-50/50">
+                            <tr class="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500 w-10">
+                                    <input type="checkbox" id="select-all-students" class="h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950">
+                                </th>
+                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Student Profile</th>
+                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Class</th>
+                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Status</th>
+                                <th class="h-12 px-4 text-right align-middle font-medium text-zinc-500">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="[&_tr:last-child]:border-0">
+                            <?php foreach($students as $student): 
+                                  $studentJson = htmlspecialchars(json_encode($student), ENT_QUOTES, 'UTF-8');
+                            ?>
+                            <tr onclick="openViewModal(<?= $studentJson ?>)" class="border-b transition-colors hover:bg-zinc-50/50 cursor-pointer">
+                                <td class="p-4 align-middle" onclick="event.stopPropagation()">
+                                    <input type="checkbox" name="student_ids[]" value="<?= $student['id'] ?>" class="h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950">
+                                </td>
+                                <td class="p-4 align-middle">
+                                    <div class="flex items-center gap-3">
+                                        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-medium text-zinc-900 border border-zinc-200">
+                                            <?= strtoupper(substr($student['name'], 0, 1)) ?>
+                                        </div>
+                                        <div class="flex flex-col">
+                                            <span class="font-medium leading-none mb-1"><?= htmlspecialchars($student['name']) ?></span>
+                                            <span class="text-xs text-zinc-500 font-mono">ID: <?= htmlspecialchars($student['student_id_no'] ?: 'N/A') ?></span>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="p-4 align-middle text-zinc-600">
+                                    <?= htmlspecialchars($student['class_name'] ?? 'Unassigned') ?>
+                                </td>
+                                <td class="p-4 align-middle">
+                                    <?php if($student['status'] === 'active'): ?>
+                                        <div class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-emerald-100 text-emerald-800">
+                                            Active
+                                        </div>
+                                    <?php else: ?>
+                                        <div class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-zinc-100 text-zinc-600">
+                                            Inactive
+                                        </div>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="p-4 align-middle text-right" onclick="event.stopPropagation()">
+                                    <button type="button" onclick="editStudent(<?= $studentJson ?>)" class="inline-flex items-center justify-center rounded-md h-8 w-8 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 transition-colors">
+                                        <i class="fas fa-ellipsis-h text-xs"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="viewStudentModal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true">
+    <div class="fixed inset-0 bg-white/80 backdrop-blur-sm transition-opacity opacity-0" id="viewModalBackdrop"></div>
+
+    <div class="fixed inset-0 z-10 overflow-y-auto">
+        <div class="flex min-h-full items-center justify-center p-4">
+            <div class="relative w-full max-w-lg transform overflow-hidden rounded-lg border border-zinc-200 bg-white p-6 shadow-lg transition-all opacity-0 translate-y-4" id="viewModalPanel">
+                
+                <div class="flex flex-col space-y-1.5 text-center sm:text-left mb-6">
+                    <h3 class="text-lg font-semibold leading-none tracking-tight" id="modal-name">Student Profile</h3>
+                    <p class="text-sm text-zinc-500" id="modal-id">Student Details</p>
+                </div>
+
+                <div class="grid gap-6 py-4">
+                    <div class="flex items-center gap-4">
+                        <div class="h-16 w-16 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center text-xl font-semibold text-zinc-600" id="modal-avatar"></div>
+                        <div>
+                            <div id="modal-status-pill"></div>
+                            <p class="text-sm text-zinc-500 mt-1" id="modal-class-display"></p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4 text-sm">
+                        <div class="space-y-3">
+                            <p class="text-zinc-500 font-medium">Guardian</p>
+                            <p class="text-zinc-900" id="modal-parent">N/A</p>
+                        </div>
+                        <div class="space-y-3">
+                            <p class="text-zinc-500 font-medium">Phone</p>
+                            <p class="text-zinc-900" id="modal-phone">N/A</p>
+                        </div>
+                        <div class="space-y-3">
+                            <p class="text-zinc-500 font-medium">Email</p>
+                            <p class="text-zinc-900 truncate" id="modal-email">N/A</p>
+                        </div>
+                        <div class="space-y-3">
+                            <p class="text-zinc-500 font-medium">Enrollment Date</p>
+                            <p class="text-zinc-900" id="modal-joined">N/A</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-6">
+                    <button onclick="closeViewModal()" class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-zinc-200 bg-white h-9 px-4 py-2 hover:bg-zinc-100">
+                        Close
+                    </button>
+                    <button id="modal-edit-btn" class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-zinc-900 text-zinc-50 h-9 px-4 py-2 hover:bg-zinc-900/90 mb-2 sm:mb-0">
+                        Edit Profile
+                    </button>
+                </div>
+
+                <button onclick="closeViewModal()" class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-white transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2">
+                    <i class="fas fa-times text-sm"></i>
+                    <span class="sr-only">Close</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
     function openViewModal(student) {
@@ -1164,20 +1222,11 @@ if (student.status === 'active') {
     }
 </script>
 
-<!-- Classes Tab Content -->
-<div id="classes" class="tab-content max-w-5xl mx-auto p-6 font-sans text-zinc-950">
+<div class="max-w-5xl mx-auto p-6 font-sans text-zinc-950">
     
     <div class="mb-8">
         <h2 class="text-3xl font-bold tracking-tight">Classes Management</h2>
         <p class="text-sm text-zinc-500 mt-1">Configure class structures, promotion paths, and financial reporting.</p>
-    </div>
-
-    <!-- Stats Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <?= renderStatCard('Total Classes', number_format($total_classes), null, 'Active classes') ?>
-        <?= renderStatCard('Total Students', number_format($student_metrics['active']), null, 'Enrolled students') ?>
-        <?= renderStatCard('Avg Class Size', number_format($avg_class_size, 1), null, 'Students per class') ?>
-        <?= renderStatCard('Collection Rate', $collection_rate . '%', null, 'Fees collected') ?>
     </div>
 
     <div class="inline-flex h-10 items-center justify-center rounded-md bg-zinc-100 p-1 text-zinc-500 mb-8">
@@ -1197,7 +1246,7 @@ if (student.status === 'active') {
 
     <div id="tab-viewport">
 
-        <div id="class-directory" class="tab-pane space-y-6 active" style="display: block;">
+        <div id="class-directory" class="tab-pane space-y-6">
             <div class="flex justify-between items-center">
                 <h3 class="text-lg font-semibold italic text-zinc-500">Class Directory</h3>
                 <div class="flex items-center space-x-2 bg-zinc-100/50 p-1.5 px-3 rounded-md border border-zinc-200">
@@ -1321,347 +1370,475 @@ if (student.status === 'active') {
 
     </div>
 </div>
+
 <script>
 function switchTab(tabId) {
     const targetPane = document.getElementById(tabId);
     const targetButton = document.getElementById('nav-' + tabId);
 
-    // Safety Check
+    // 1. Safety Check: If the tab doesn't exist, stop the function
     if (!targetPane) {
         console.error(`Tab pane with id "${tabId}" not found.`);
         return;
     }
 
-    // Hide all tab panes and remove active class
+    // 2. Hide all tab panes
     document.querySelectorAll('.tab-pane').forEach(pane => {
         pane.classList.add('hidden');
-        pane.classList.remove('active');
-        pane.style.display = 'none';
     });
 
-    // Show the selected pane
+    // 3. Show the selected pane
     targetPane.classList.remove('hidden');
-    targetPane.classList.add('active');
-    targetPane.style.display = 'block';
 
-    // Reset all navigation buttons
+    // 4. Reset all navigation buttons
     document.querySelectorAll('.tab-trigger').forEach(btn => {
         btn.classList.remove('bg-white', 'text-zinc-950', 'shadow-sm');
         btn.classList.add('hover:text-zinc-900');
     });
 
-    // Apply active style to the button
+    // 5. Apply active style to the button (if it exists)
     if (targetButton) {
         targetButton.classList.add('bg-white', 'text-zinc-950', 'shadow-sm');
         targetButton.classList.remove('hover:text-zinc-900');
     }
 }
 </script>
-<!-- End Classes Tab Content -->
 
-
-<!-- Students Tab Content -->
-<div id="students" class="tab-content active h-full bg-white p-6 min-h-screen font-sans text-zinc-950">
-    
-    <div class="max-w-7xl mx-auto mb-8">
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
-            <div>
-                <h2 class="text-2xl font-semibold tracking-tight">Students Directory</h2>
-                <p class="text-sm text-zinc-500">Manage student enrollment, status, and class assignments.</p>
-            </div>
-            <button onclick="openModal('addStudentModal')" class="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 shadow hover:bg-zinc-900/90 h-9 px-4 py-2 gap-2">
-                <i class="fas fa-plus text-xs"></i> Add New Student
-            </button>
-        </div>
-
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <?= renderStatCard('Total Students', number_format($student_metrics['total']), null, 'All enrolled students') ?>
-            <?= renderStatCard('Active Students', number_format($student_metrics['active']), null, 'Currently active') ?>
-            <?= renderStatCard('New This Month', number_format($student_metrics['new_this_month']), $student_trend, 'Recent enrollments') ?>
-            <?= renderStatCard('Outstanding Balance', format_currency($student_outstanding), null, 'Total unpaid fees') ?>
-        </div>
-
-        <div class="flex flex-col md:flex-row gap-3 items-center">
-            <form method="get" class="flex flex-col md:flex-row w-full gap-3">
-                <input type="hidden" name="tab" value="students">
-                
-                <div class="relative flex-1">
-                    <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
-                    <input type="text" name="filter_name" value="<?= htmlspecialchars($filter_name) ?>" 
-                           class="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-9 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950" 
-                           placeholder="Search students...">
-                </div>
-
-                <select name="filter_class_id" class="h-9 w-full md:w-[180px] rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
-                    <option value="">All Classes</option>
-                    <?php foreach($all_classes_for_dropdown as $class): ?>
-                        <option value="<?= $class['id'] ?>" <?= ($filter_class_id == $class['id']) ? 'selected' : '' ?>><?= htmlspecialchars($class['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                
-                <select name="filter_status" class="h-9 w-full md:w-[150px] rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
-                    <option value="active" <?= ($filter_status == 'active') ? 'selected' : '' ?>>Active</option>
-                    <option value="inactive" <?= ($filter_status == 'inactive') ? 'selected' : '' ?>>Inactive</option>
-                    <option value="all" <?= ($filter_status == 'all') ? 'selected' : '' ?>>All Status</option>
-                </select>
-
-                <button type="submit" class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-zinc-200 bg-white shadow-sm hover:bg-zinc-100 h-9 px-4 py-2 transition-colors">
-                    Filter
-                </button>
+    <div id="invoices" class="tab-content">
+        <div class="card">
+            <h3>Invoices</h3>
+            <div class="table-actions"><a href="create_invoice.php" class="btn-add"><i class="fas fa-plus"></i> Create Invoice</a></div>
+            <form method="get" class="filter-controls">
+                <input type="hidden" name="tab" value="invoices">
+                <div class="form-group"><label>Student</label><select name="filter_invoice_student_id" class="form-control"><option value="">All Students</option><?php foreach($all_students_for_dropdown as $student): ?><option value="<?= $student['id'] ?>" <?= ($filter_invoice_student_id == $student['id']) ? 'selected' : '' ?>><?= htmlspecialchars($student['name']) ?></option><?php endforeach; ?></select></div>
+                <div class="form-group"><label>Status</label><select name="filter_invoice_status" class="form-control"><option value="">All</option><option value="Paid" <?= ($filter_invoice_status == 'Paid') ? 'selected' : '' ?>>Paid</option><option value="Partially Paid" <?= ($filter_invoice_status == 'Partially Paid') ? 'selected' : '' ?>>Partially Paid</option><option value="Unpaid" <?= ($filter_invoice_status == 'Unpaid') ? 'selected' : '' ?>>Unpaid</option><option value="Overdue" <?= ($filter_invoice_status == 'Overdue') ? 'selected' : '' ?>>Overdue</option></select></div>
+                <div class="form-group"><label>From</label><input type="date" name="filter_invoice_start_date" value="<?= htmlspecialchars($filter_invoice_start_date) ?>" class="form-control"></div>
+                <div class="form-group"><label>To</label><input type="date" name="filter_invoice_end_date" value="<?= htmlspecialchars($filter_invoice_end_date) ?>" class="form-control"></div>
+                <button type="submit" class="btn-primary">Filter</button>
             </form>
+            <div class="table-container">
+                <table>
+                    <thead><tr><th>ID</th><th>Student</th><th>Date</th><th>Due Date</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        <?php foreach($invoices as $inv): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($inv['id']) ?></td>
+                            <td><?= htmlspecialchars($inv['student_name']) ?></td>
+                            <td><?= date('M d, Y', strtotime($inv['invoice_date'])) ?></td>
+                            <td><?= date('M d, Y', strtotime($inv['due_date'])) ?></td>
+                            <td>$<?= number_format($inv['total_amount'] ?? 0, 2) ?></td>
+                            <td><span class="status-badge status-<?= strtolower(str_replace(' ', '', $inv['status'])) ?>"><?= htmlspecialchars($inv['status']) ?></span></td>
+                            <td><a href="view_invoice.php?id=<?= $inv['id'] ?>" class="btn-icon btn-view"><i class="fas fa-eye"></i></a></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
-
-                        <div class="flex items-center justify-between px-4 py-3 bg-zinc-50/50 border-t border-zinc-200">
-                    <div class="flex items-center gap-2">
-                        <select name="bulk_action" class="h-8 w-[130px] rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-zinc-950">
-                            <option value="">Bulk Actions</option>
-                            <option value="delete">Deactivate</option>
-                            <option value="activate">Activate</option>
-                        </select>
-                        <button type="submit" name="bulk_action_submit" class="h-8 px-3 rounded-md border border-zinc-200 bg-white text-xs font-medium hover:bg-zinc-100 transition-colors">
-                            Apply
-                        </button>
-                    </div>
-                    <p class="text-xs text-zinc-500"><?= count($students) ?> students found</p>
+    </div>
+    
+    <div id="fee_structure" class="tab-content">
+        <div class="card">
+            <h3>Fee Structure Management</h3>
+            <p>Assign mandatory or optional fees to different classes for a specific academic period.</p>
+            
+            <form method="get" class="filter-controls">
+                <input type="hidden" name="tab" value="fee_structure">
+                <div class="form-group">
+                    <label for="fs_year">Academic Year</label>
+                    <input type="text" id="fs_year" name="fs_year" class="form-control" value="<?= htmlspecialchars($current_academic_year) ?>">
                 </div>
+                <div class="form-group">
+                    <label for="fs_term">Term</label>
+                    <select id="fs_term" name="fs_term" class="form-control">
+                        <option value="Term 1" <?= $current_term == 'Term 1' ? 'selected' : '' ?>>Term 1</option>
+                        <option value="Term 2" <?= $current_term == 'Term 2' ? 'selected' : '' ?>>Term 2</option>
+                        <option value="Term 3" <?= $current_term == 'Term 3' ? 'selected' : '' ?>>Term 3</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn-primary">Load Structure</button>
+                <button type="button" class="btn-add" onclick="openModal('assignFeeItemModal')"><i class="fas fa-plus"></i> Assign Fee Item</button>
+                <button type="button" class="btn-secondary" onclick="openModal('createBaseItemModal')"><i class="fas fa-tag"></i> Create New Base Item</button>
+            </form>
+
+            <hr style="margin: 2rem 0;">
+            <h4>Bulk Upload Tools</h4>
+            <div class="form-grid">
+                <form method="post" enctype="multipart/form-data" class="filter-controls">
+                    <input type="hidden" name="active_tab" value="fee_structure">
+                    <p><strong>Step 1: Upload Base Items</strong><br>CSV format: <strong>item_name, item_description</strong></p>
+                    <div class="form-group">
+                        <label for="base_items_csv">Base Items CSV File</label>
+                        <input type="file" name="base_items_csv" id="base_items_csv" class="form-control" required accept=".csv">
+                    </div>
+                    <button type="submit" name="upload_base_items" class="btn-info"><i class="fas fa-upload"></i> Upload Base Items</button>
+                </form>
+                <form method="post" enctype="multipart/form-data" class="filter-controls">
+                    <input type="hidden" name="active_tab" value="fee_structure">
+                    <input type="hidden" name="academic_year_hidden" value="<?= htmlspecialchars($current_academic_year) ?>">
+                    <input type="hidden" name="term_hidden" value="<?= htmlspecialchars($current_term) ?>">
+                    <p><strong>Step 2: Upload Fee Structure</strong><br>CSV format: <strong>class_name, item_name, amount, is_mandatory (1 or 0)</strong></p>
+                    <div class="form-group">
+                        <label for="fee_structure_csv">Fee Structure CSV File</label>
+                        <input type="file" name="fee_structure_csv" id="fee_structure_csv" class="form-control" required accept=".csv">
+                    </div>
+                    <button type="submit" name="upload_fee_structure" class="btn-success"><i class="fas fa-upload"></i> Upload & Save Structure</button>
+                </form>
+            </div>
+
+            <div id="fee-structure-accordion" style="margin-top: 2rem;">
+                <?php if (empty($fee_structure_by_class)): ?>
+                    <p>No fee structure defined for the selected academic year and term.</p>
+                <?php else: ?>
+                    <?php foreach ($all_classes_for_dropdown as $class): 
+                        if (!isset($fee_structure_by_class[$class['id']])) continue;
+                        $class_fees = $fee_structure_by_class[$class['id']];
+                        $total_mandatory_fee = 0;
+                        foreach($class_fees['items'] as $item) {
+                            if ($item['is_mandatory']) $total_mandatory_fee += $item['amount'];
+                        }
+                    ?>
+                        <div class="accordion-item">
+                            <button type="button" class="accordion-header">
+                                <?= htmlspecialchars($class_fees['name']) ?>
+                                <span class="total-fees">Mandatory Total: KSH <?= number_format($total_mandatory_fee, 2) ?></span>
+                            </button>
+                            <div class="accordion-content">
+                                <h4>Mandatory Fees</h4>
+                                <div class="table-container">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Fee Item</th>
+                                                <th>Frequency</th>
+                                                <th>Amount</th>
+                                                <th style="width: 100px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php
+                                            $has_mandatory = false;
+                                            foreach ($class_fees['items'] as $item):
+                                                if ($item['is_mandatory']):
+                                                    $has_mandatory = true;
+                                                    $fee_frequency = $item['fee_frequency'] ?? 'recurring';
+                                                    $frequency_badge_class = $fee_frequency === 'one_time' ? 'badge-warning' : ($fee_frequency === 'annual' ? 'badge-info' : 'badge-secondary');
+                                                    $frequency_label = ucfirst(str_replace('_', ' ', $fee_frequency));
+                                            ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($item['item_name']) ?></td>
+                                                <td><span class="badge <?= $frequency_badge_class ?>"><?= $frequency_label ?></span></td>
+                                                <td class="amount">KSH <?= number_format($item['amount'], 2) ?></td>
+                                                <td>
+                                                    <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
+                                                    <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
+                                                        <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
+                                                        <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                            <?php
+                                                endif;
+                                            endforeach;
+                                            if (!$has_mandatory):
+                                            ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted">No mandatory fees assigned</td>
+                                            </tr>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <h4 style="margin-top: 1.5rem;">Optional Fees</h4>
+                                <div class="table-container">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Fee Item</th>
+                                                <th>Frequency</th>
+                                                <th>Amount</th>
+                                                <th style="width: 100px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php
+                                            $has_optional = false;
+                                            foreach ($class_fees['items'] as $item):
+                                                if (!$item['is_mandatory']):
+                                                    $has_optional = true;
+                                                    $fee_frequency = $item['fee_frequency'] ?? 'recurring';
+                                                    $frequency_badge_class = $fee_frequency === 'one_time' ? 'badge-warning' : ($fee_frequency === 'annual' ? 'badge-info' : 'badge-secondary');
+                                                    $frequency_label = ucfirst(str_replace('_', ' ', $fee_frequency));
+                                            ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($item['item_name']) ?></td>
+                                                <td><span class="badge <?= $frequency_badge_class ?>"><?= $frequency_label ?></span></td>
+                                                <td class="amount">KSH <?= number_format($item['amount'], 2) ?></td>
+                                                <td>
+                                                    <button class="btn-icon btn-edit" title="Edit" onclick='openEditFeeModal(<?= json_encode($item) ?>)'><i class="fas fa-edit"></i></button>
+                                                    <form method="post" style="display:inline;" onsubmit="return confirm('Remove this fee from the class?');">
+                                                        <input type="hidden" name="active_tab" value="fee_structure"><input type="hidden" name="remove_fee_item" value="1"><input type="hidden" name="fee_id" value="<?= $item['id'] ?>">
+                                                        <button type="submit" class="btn-icon btn-delete" title="Remove"><i class="fas fa-times"></i></button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                            <?php
+                                                endif;
+                                            endforeach;
+                                            if (!$has_optional):
+                                            ?>
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted">No optional fees assigned</td>
+                                            </tr>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
     </div>
 
-    <div class="max-w-7xl mx-auto">
-        <div class="rounded-md border border-zinc-200">
-            <form id="bulk-student-form" method="post">
-                <input type="hidden" name="active_tab" value="students">
-                
-                <div class="relative w-full overflow-auto">
-                    <table class="w-full caption-bottom text-sm">
-                        <thead class="[&_tr]:border-b bg-zinc-50/50">
-                            <tr class="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
-                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500 w-10">
-                                    <input type="checkbox" id="select-all-students" class="h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950">
-                                </th>
-                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Student Profile</th>
-                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Class</th>
-                                <th class="h-12 px-4 text-left align-middle font-medium text-zinc-500">Status</th>
-                                <th class="h-12 px-4 text-right align-middle font-medium text-zinc-500">Actions</th>
+    <div id="templates" class="tab-content">
+        <div class="card">
+            <h3>Manage Invoice Templates</h3>
+            <p>Edit or delete reusable templates for creating invoices quickly.</p>
+            <div class="table-actions"><a href="create_invoice.php" class="btn-add"><i class="fas fa-plus"></i> Create New Template</a></div>
+            <?php if (empty($invoice_templates)): ?>
+                <p>No invoice templates have been saved yet. You can save one from the 'Create Invoice' page.</p>
+            <?php else: ?>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Template Name</th>
+                                <th>Linked Class</th>
+                                <th style="text-align: right;">Actions</th>
                             </tr>
                         </thead>
-                        <tbody class="[&_tr:last-child]:border-0">
-                            <?php foreach($students as $student): 
-                                  $studentJson = htmlspecialchars(json_encode($student), ENT_QUOTES, 'UTF-8');
-                            ?>
-                            <tr onclick="openViewModal(<?= $studentJson ?>)" class="border-b transition-colors hover:bg-zinc-50/50 cursor-pointer">
-                                <td class="p-4 align-middle" onclick="event.stopPropagation()">
-                                    <input type="checkbox" name="student_ids[]" value="<?= $student['id'] ?>" class="h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-950">
-                                </td>
-                                <td class="p-4 align-middle">
-                                    <div class="flex items-center gap-3">
-                                        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-medium text-zinc-900 border border-zinc-200">
-                                            <?= strtoupper(substr($student['name'], 0, 1)) ?>
+                        <tbody>
+                            <?php foreach ($invoice_templates as $template): ?>
+                                <tr>
+                                    <td><?= htmlspecialchars($template['name']); ?></td>
+                                    <td>
+                                        <?php if ($template['class_name']): ?>
+                                            <span class="badge badge-success"><?= htmlspecialchars($template['class_name']); ?></span>
+                                        <?php else: ?>
+                                            <span class="badge badge-secondary">Not Linked</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td style="text-align: right;">
+                                        <div class="action-buttons">
+                                            <button class="btn-icon btn-edit" onclick='openEditTemplateModal(<?= htmlspecialchars(json_encode($template), ENT_QUOTES, "UTF-8") ?>)'>
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <form action="customer_center.php" method="post" onsubmit="return confirm('Are you sure you want to delete this template?');" style="display:inline;">
+                                                <input type="hidden" name="active_tab" value="templates">
+                                                <input type="hidden" name="delete_template" value="1">
+                                                <input type="hidden" name="template_id" value="<?php echo $template['id']; ?>">
+                                                <button type="submit" name="delete_template" class="btn-icon btn-delete"><i class="fas fa-trash"></i></button>
+                                            </form>
                                         </div>
-                                        <div class="flex flex-col">
-                                            <span class="font-medium leading-none mb-1"><?= htmlspecialchars($student['name']) ?></span>
-                                            <span class="text-xs text-zinc-500 font-mono">ID: <?= htmlspecialchars($student['student_id_no'] ?: 'N/A') ?></span>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="p-4 align-middle text-zinc-600">
-                                    <?= htmlspecialchars($student['class_name'] ?? 'Unassigned') ?>
-                                </td>
-                                <td class="p-4 align-middle">
-                                    <?php if($student['status'] === 'active'): ?>
-                                        <div class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-emerald-100 text-emerald-800">
-                                            Active
-                                        </div>
-                                    <?php else: ?>
-                                        <div class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-zinc-100 text-zinc-600">
-                                            Inactive
-                                        </div>
-                                    <?php endif; ?>
-                                </td>
-                                <td class="p-4 align-middle text-right" onclick="event.stopPropagation()">
-                                    <button type="button" onclick="editStudent(<?= $studentJson ?>)" class="inline-flex items-center justify-center rounded-md h-8 w-8 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 transition-colors">
-                                        <i class="fas fa-ellipsis-h text-xs"></i>
-                                    </button>
-                                </td>
-                            </tr>
+                                    </td>
+                                </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <div id="receive_payment" class="tab-content">
+        <div class="card">
+            <h3>Receive Payment</h3>
+            <p>All payments recorded here will be added to "Undeposited Funds". You can group them into a bank deposit from the Banking page.</p>
+            <form id="paymentForm" method="post">
+                <input type="hidden" name="active_tab" value="receipts">
+                <input type="hidden" name="process_payment" value="1">
+                <div class="form-group"><label for="student_id_payment">Student</label><select name="student_id" id="student_id_payment" class="form-control" required onchange="loadUnpaidData()"><option value="">Select Student</option><?php foreach ($all_students_for_dropdown as $student): ?><option value="<?= $student['id'] ?>"><?= htmlspecialchars($student['name']) ?></option><?php endforeach; ?></select></div>
+                
+                <div class="form-group"><label for="payment_date">Payment Date</label><input type="date" name="payment_date" id="payment_date" class="form-control" value="<?= date('Y-m-d') ?>" required></div>
+                <div class="form-group"><label for="payment_method">Payment Method</label><select name="payment_method" id="payment_method" class="form-control" required><option>Cash</option><option>Bank Transfer</option><option>Mobile Money</option><option>Check</option></select></div>
+                <div class="form-group"><label for="memo">Memo</label><textarea name="memo" id="memo" rows="2" class="form-control"></textarea></div>
+                
+                <h4>Unpaid Invoices</h4>
+                <table id="unpaidInvoicesTable" class="table"><thead><tr><th>#</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th>Payment</th></tr></thead><tbody></tbody></table>
+                
+                <div style="text-align: right; font-size: 1.2rem; font-weight: bold; margin-top: 1rem;">Total Payment: <span id="totalPayment"><?= format_currency(0) ?></span></div>
+                <div class="form-actions"><button type="submit" class="btn-primary">Record Payment</button></div>
+            </form>
+        </div>
+    </div>
+    <div id="statements" class="tab-content">
+        <div class="card">
+            <h3>Create Statements</h3>
+            <form id="statementForm" method="post" action="generate_statements.php" target="_blank">
+                <div class="filter-controls">
+                    <div class="form-group"><label for="statement_type">Generate For</label><select name="statement_type" id="statement_type" class="form-control" required><option value="all">All Students</option><option value="class">A Specific Class</option><option value="student">A Specific Student</option></select></div>
+                    <div class="form-group" id="statement_class_selector" style="display: none;"><label for="statement_class_id">Select Class</label><select name="class_id" id="statement_class_id" class="form-control"><option value="">-- Select Class --</option><?php foreach ($all_classes_for_dropdown as $class): ?><option value="<?= $class['id']; ?>"><?= htmlspecialchars($class['name']); ?></option><?php endforeach; ?></select></div>
+                    <div class="form-group" id="statement_student_selector" style="display: none;"><label for="statement_student_id">Select Student</label><select name="student_id" id="statement_student_id" class="form-control"><option value="">-- Select Student --</option><?php foreach ($all_students_for_dropdown as $student): ?><option value="<?= $student['id']; ?>"><?= htmlspecialchars($student['name']); ?></option><?php endforeach; ?></select></div>
+                    <div class="form-group"><label for="statement_date_from">Date From</label><input type="date" name="date_from" id="statement_date_from" class="form-control" required></div>
+                    <div class="form-group"><label for="statement_date_to">Date To</label><input type="date" name="date_to" id="statement_date_to" class="form-control" required value="<?= date('Y-m-d') ?>"></div>
+                    <button type="submit" class="btn-primary"><i class="fas fa-file-alt"></i> Generate Statements</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div id="receipts" class="tab-content">
+        <div class="card">
+            <h3>Payment Receipts</h3>
+            <table>
+                <thead><tr><th>Receipt #</th><th>Student</th><th>Date</th><th>Amount</th><th>Method</th><th>Actions</th></tr></thead>
+                <tbody>
+                    <?php foreach($all_receipts as $receipt): ?>
+                    <tr>
+                        <td><?= htmlspecialchars($receipt['receipt_number']) ?></td>
+                        <td><?= htmlspecialchars($receipt['student_name']) ?></td>
+                        <td><?= date('M d, Y', strtotime($receipt['payment_date'])) ?></td>
+                        <td>$<?= number_format($receipt['amount'], 2) ?></td>
+                        <td><?= htmlspecialchars($receipt['payment_method']) ?></td>
+                        <td><button class="btn-icon btn-view" onclick="viewReceipt(<?= $receipt['id'] ?>)"><i class="fas fa-eye"></i></button></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div id="bulk_messaging" class="tab-content">
+        <div class="card">
+            <h3>Bulk Messaging</h3>
+            <p>Select a recipient group, choose a template or write a custom message, and send. Placeholders [school_name], [student_name], [balance], and [link] will be replaced automatically.</p>
+            <form id="bulkMessageForm" method="post">
+                <input type="hidden" name="active_tab" value="bulk_messaging">
+                <input type="hidden" name="send_bulk_message" value="1">
+                <div class="form-group">
+                    <label for="send_to_group">Send To</label>
+                    <select name="send_to_group" id="send_to_group" class="form-control" required>
+                        <option value="">-- Select Recipient Group --</option>
+                        <optgroup label="Standard Messages">
+                            <option value="class">Students in a Specific Class</option>
+                            <option value="unpaid">Students with Unpaid Invoices</option>
+                            <option value="all">All Active Students</option>
+                        </optgroup>
+                        <optgroup label="Messages with Links">
+                            <option value="unpaid_invoices_link">Send Invoice Links to Students with Unpaid Balances</option>
+                            <option value="class_statements_link">Send Statement Links to a Specific Class</option>
+                            <option value="all_statements_link">Send Statement Links to All Active Students</option>
+                        </optgroup>
+                    </select>
+                </div>
 
+                <div id="class-messaging-container" class="form-group" style="display: none;">
+                    <label for="class_id_messaging">Select Class</label>
+                    <select name="class_id_messaging" id="class_id_messaging" class="form-control">
+                        <option value="">-- Select Class --</option>
+                        <?php foreach ($all_classes_for_dropdown as $class): ?>
+                            <option value="<?= $class['id']; ?>"><?= htmlspecialchars($class['name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
 
+                <div id="statement-date-range-container" class="form-grid" style="display: none; margin-top: 1rem; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="statement_link_date_from">Statement From</label>
+                        <input type="date" name="statement_link_date_from" id="statement_link_date_from" class="form-control" value="<?= date('Y-m-01') ?>">
+                    </div>
+                    <div class="form-group">
+                        <label for="statement_link_date_to">Statement To</label>
+                        <input type="date" name="statement_link_date_to" id="statement_link_date_to" class="form-control" value="<?= date('Y-m-d') ?>">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="message_template_select">Message Templates (Optional)</label>
+                    <select id="message_template_select" class="form-control">
+                        <option value="">-- Select a pre-written message --</option>
+                        <?php foreach ($message_templates as $title => $template_text): ?>
+                            <option value="<?= htmlspecialchars($template_text) ?>"><?= htmlspecialchars($title) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="message_body">Message</label>
+                    <textarea name="message_body" id="message_body" rows="6" class="form-control" required placeholder="Select a template or type your message here..."></textarea>
+                    <small>You can use placeholders: [school_name], [student_name], [balance], and [link]. The [link] placeholder is only for link-based message groups.</small>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary"><i class="fas fa-paper-plane"></i> Send Bulk Message</button>
+                </div>
             </form>
         </div>
     </div>
 </div>
-<!-- Student Modals -->
-<div id="viewStudentModal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true">
-    <div class="fixed inset-0 bg-black/40 backdrop-blur-sm transition-opacity" id="viewModalBackdrop" onclick="closeViewModal()"></div>
 
-    <div class="fixed inset-0 z-10 overflow-y-auto">
-        <div class="flex min-h-full items-center justify-center p-4">
-            <div class="relative w-full max-w-lg transform overflow-hidden rounded-2xl border border-gray-100 bg-white p-0 shadow-2xl transition-all" id="viewModalPanel">
-                
-                <div class="h-24 bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-100"></div>
-
-                <div class="px-8 pb-6">
-                    <div class="relative flex items-end justify-between -mt-10">
-                        <div class="h-20 w-20 rounded-2xl bg-white border-4 border-white shadow-md flex items-center justify-center text-2xl font-bold text-gray-900 overflow-hidden" id="modal-avatar">
-                            </div>
-                        <div id="modal-status-pill">
-                            </div>
-                    </div>
-
-                    <div class="mt-4">
-                        <h3 class="text-xl font-bold tracking-tight text-gray-900" id="modal-name">Student Name</h3>
-                        <p class="text-xs font-mono text-gray-400 mt-0.5 tracking-tighter" id="modal-id">ID: #000000</p>
-                    </div>
-                </div>
-
-                <div class="px-8 py-6 border-t border-gray-50 space-y-6">
-                    <div class="flex items-center gap-4">
-                        <div class="flex-1">
-                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Enrolled Class</p>
-                            <p class="text-sm font-semibold text-gray-900 mt-1" id="modal-class-display">Grade 1 North</p>
-                        </div>
-                        <div class="flex-1">
-                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Admission Date</p>
-                            <p class="text-sm font-semibold text-gray-900 mt-1" id="modal-joined">Jan 02, 2026</p>
-                        </div>
-                    </div>
-
-                    <div class="h-px bg-gray-50"></div>
-
-                    <div class="grid grid-cols-2 gap-y-6 gap-x-4">
-                        <div class="space-y-1">
-                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Primary Guardian</p>
-                            <p class="text-sm text-gray-900 font-medium" id="modal-parent">N/A</p>
-                        </div>
-                        <div class="space-y-1">
-                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Phone Number</p>
-                            <p class="text-sm text-gray-900 font-mono" id="modal-phone">N/A</p>
-                        </div>
-                        <div class="col-span-2 space-y-1">
-                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Email Address</p>
-                            <p class="text-sm text-gray-900 truncate" id="modal-email">N/A</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="px-8 py-6 bg-gray-50/50 border-t border-gray-100 flex flex-col sm:flex-row sm:justify-end gap-3">
-                    <button onclick="closeViewModal()" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase tracking-widest hover:text-black transition-colors">
-                        Close
-                    </button>
-                    <button id="modal-edit-btn" class="inline-flex items-center justify-center rounded-lg bg-black text-white text-xs font-bold uppercase tracking-widest h-10 px-6 shadow-lg hover:bg-gray-800 active:scale-95 transition-all">
-                        <i class="fas fa-edit mr-2 text-[10px]"></i> Edit Profile
-                    </button>
-                </div>
-
-                <button onclick="closeViewModal()" class="absolute right-4 top-4 h-8 w-8 flex items-center justify-center rounded-full bg-black/5 text-gray-500 hover:bg-black/10 hover:text-black transition-all">
-                    <i class="fas fa-times text-xs"></i>
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
+<!-- All Modals -->
 <div id="addStudentModal" class="fixed inset-0 z-50 hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onclick="closeModal('addStudentModal')"></div>
+    <div class="fixed inset-0 bg-gray-900/70 backdrop-blur-sm transition-opacity" onclick="closeModal('addStudentModal')"></div>
 
     <div class="fixed inset-0 z-10 overflow-y-auto">
         <div class="flex min-h-full items-center justify-center p-4 text-center sm:p-0">
-            <div class="relative transform overflow-hidden rounded-xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-6xl my-8">
+            <div class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-lg my-8">
                 
-                <div class="bg-white px-8 py-5 border-b border-gray-100 flex items-center justify-between sticky top-0 z-20">
+                <div class="bg-white px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                     <div>
-                        <h3 class="text-xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
-                            <i class="fas fa-plus-circle text-gray-400 text-sm"></i> Add New Student
+                        <h3 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                            <i class="fas fa-user-plus text-blue-600"></i> Add New Student
                         </h3>
-                        <p class="text-xs text-gray-500 mt-1 uppercase tracking-wider font-medium">Admission Portal • Academic Year <?= date('Y') ?></p>
+                        <p class="text-sm text-gray-500 mt-1">Quick student registration</p>
                     </div>
-                    <button onclick="closeModal('addStudentModal')" class="h-8 w-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-black transition-all">
-                        <i class="fas fa-times"></i>
+                    <button onclick="closeModal('addStudentModal')" class="text-gray-400 hover:text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full p-2 transition-colors">
+                        <i class="fas fa-times text-lg"></i>
                     </button>
                 </div>
 
-                <form method="post" class="flex flex-col md:flex-row h-[70vh]">
+                <form method="post">
                     <input type="hidden" name="active_tab" value="students">
                     <input type="hidden" name="addStudent" value="1">
 
-                    <div class="w-full md:w-72 bg-gray-50/50 border-r border-gray-100 p-6 flex flex-col gap-1 overflow-y-auto">
-                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4 px-3">Form Navigation</p>
-                        
-                        <button type="button" onclick="switchTabStudent('add', 'personal')" class="tab-btn-add active group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black data-[active=true]:bg-white data-[active=true]:text-black data-[active=true]:shadow-sm border border-transparent data-[active=true]:border-gray-200" data-tab="personal">
-                            <i class="fas fa-user w-4 opacity-50 group-hover:opacity-100"></i> Personal Info
-                        </button>
-                        
-                        <button type="button" onclick="switchTabStudent('add', 'parents')" class="tab-btn-add group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="parents">
-                            <i class="fas fa-users w-4 opacity-50 group-hover:opacity-100"></i> Family & Guardian
-                        </button>
+                    <div class="p-6 space-y-5">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Student Name <span class="text-red-500">*</span></label>
+                            <input type="text" name="first_name" required
+                                   class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="Enter full name"
+                                   autocomplete="off">
+                            <p class="mt-1 text-xs text-gray-500">Enter the student's full name</p>
+                        </div>
 
-                        <button type="button" onclick="switchTabStudent('add', 'medical')" class="tab-btn-add group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="medical">
-                            <i class="fas fa-heartbeat w-4 opacity-50 group-hover:opacity-100"></i> Health Records
-                        </button>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Class <span class="text-red-500">*</span></label>
+                            <select name="class_id" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500">
+                                <option value="">Select Class</option>
+                                <?php foreach ($all_classes_for_dropdown as $class): ?>
+                                    <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
 
-                        <button type="button" onclick="switchTabStudent('add', 'transport')" class="tab-btn-add group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="transport">
-                            <i class="fas fa-bus w-4 opacity-50 group-hover:opacity-100"></i> Transport
-                        </button>
-
-                        <button type="button" onclick="switchTabStudent('add', 'other')" class="tab-btn-add group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="other">
-                            <i class="fas fa-info-circle w-4 opacity-50 group-hover:opacity-100"></i> Additional Info
-                        </button>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Parent's Phone Number <span class="text-red-500">*</span></label>
+                            <input type="tel" name="father_contact" required
+                                   class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="+254712345678"
+                                   pattern="[0-9+]+"
+                                   autocomplete="tel">
+                            <p class="mt-1 text-xs text-gray-500">Primary contact number for invoices and notifications</p>
+                        </div>
                     </div>
 
-                    <div class="flex-1 overflow-y-auto p-10 bg-white">
-                        
-                        <div id="add-personal" class="tab-content-add space-y-8 animate-in fade-in duration-300">
-                            <div>
-                                <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-6">Identity & Enrollment</h4>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-8">
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">First Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="first_name" required class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black py-2.5" placeholder="Jane">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">Middle Name</label>
-                                        <input type="text" name="middle_name" class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black py-2.5">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">Last Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="last_name" required class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black py-2.5" placeholder="Doe">
-                                    </div>
-                                    </div>
-                            </div>
-                        </div>
-
-                        <div id="add-parents" class="tab-content-add hidden space-y-10 animate-in fade-in duration-300">
-                            <div class="space-y-6">
-                                <div class="flex items-center gap-4">
-                                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap">Father's Information</h4>
-                                    <div class="h-px bg-gray-100 w-full"></div>
-                                </div>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">First Name</label><input type="text" name="father_first_name" required class="block w-full rounded-md border-gray-200 text-sm py-2.5"></div>
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">Contact</label><input type="text" name="father_contact" required class="block w-full rounded-md border-gray-200 text-sm py-2.5 font-mono"></div>
-                                </div>
-                            </div>
-
-                            <div class="space-y-6">
-                                <div class="flex items-center gap-4">
-                                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap">Mother's Information</h4>
-                                    <div class="h-px bg-gray-100 w-full"></div>
-                                </div>
-                                </div>
-                        </div>
-
-                        </div>
-
-                    <div class="bg-gray-50 border-t border-gray-100 p-6 flex justify-end gap-3 sticky bottom-0 z-20">
-                        <button type="button" onclick="closeModal('addStudentModal')" class="px-5 py-2.5 rounded-lg text-xs font-bold text-gray-500 hover:text-black uppercase tracking-widest transition-colors">
-                            Discard
+                    <div class="bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end gap-3">
+                        <button type="button" onclick="closeModal('addStudentModal')"
+                                class="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors">
+                            Cancel
                         </button>
-                        <button type="submit" class="px-8 py-2.5 rounded-lg bg-black text-white text-xs font-bold uppercase tracking-widest shadow-lg hover:bg-gray-800 active:scale-95 transition-all flex items-center gap-2">
-                            <i class="fas fa-check-circle text-[10px]"></i> Register Student
+                        <button type="submit"
+                                class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 shadow-sm transition-colors flex items-center gap-2">
+                            <i class="fas fa-save"></i> Add Student
                         </button>
                     </div>
                 </form>
@@ -1671,134 +1848,164 @@ function switchTab(tabId) {
 </div>
 
 <div id="editStudentModal" class="fixed inset-0 z-50 hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onclick="closeModal('editStudentModal')"></div>
-
+    <div class="fixed inset-0 bg-gray-900/70 backdrop-blur-sm transition-opacity" onclick="closeModal('editStudentModal')"></div>
     <div class="fixed inset-0 z-10 overflow-y-auto">
         <div class="flex min-h-full items-center justify-center p-4 text-center sm:p-0">
-            <div class="relative transform overflow-hidden rounded-xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-6xl my-8">
+            <div class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all sm:w-full sm:max-w-5xl my-8">
                 
-                <div class="bg-white px-8 py-5 border-b border-gray-100 flex items-center justify-between sticky top-0 z-20">
+                <div class="bg-white px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 z-20">
                     <div>
-                        <h3 class="text-xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
-                            <i class="fas fa-user-edit text-gray-400 text-sm"></i> Edit Student Profile
+                        <h3 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                            <i class="fas fa-edit text-blue-600"></i> Edit Student Profile
                         </h3>
-                        <p class="text-[10px] text-gray-400 mt-1 uppercase tracking-widest font-bold">Record Update Portal</p>
                     </div>
-                    <button onclick="closeModal('editStudentModal')" class="h-8 w-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-black transition-all">
-                        <i class="fas fa-times"></i>
+                    <button onclick="closeModal('editStudentModal')" class="text-gray-400 hover:text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-full p-2 transition-colors">
+                        <i class="fas fa-times text-lg w-5 h-5 flex items-center justify-center"></i>
                     </button>
                 </div>
 
-                <form id="editStudentForm" method="post" class="flex flex-col md:flex-row h-[70vh]">
+                <form id="editStudentForm" method="post" class="flex flex-col md:flex-row h-[75vh]">
                     <input type="hidden" name="active_tab" value="students">
                     <input type="hidden" name="editStudent" value="1">
                     <input type="hidden" name="student_id" id="edit_student_id">
 
-                    <div class="w-full md:w-72 bg-gray-50/50 border-r border-gray-100 p-6 flex flex-col gap-1 overflow-y-auto">
-                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4 px-3">Sections</p>
-                        
-                        <button type="button" onclick="switchTabStudent('edit', 'personal')" class="tab-btn-edit active group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black data-[active=true]:bg-white data-[active=true]:text-black data-[active=true]:shadow-sm border border-transparent data-[active=true]:border-gray-200" data-tab="personal">
-                            <i class="fas fa-user w-4 opacity-50 group-hover:opacity-100"></i> Personal Info
+                    <div class="w-full md:w-64 bg-gray-50 border-r border-gray-200 p-4 flex flex-col gap-2 overflow-y-auto">
+                        <button type="button" onclick="switchTab('edit', 'personal')" class="tab-btn-edit active text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="personal">
+                            <i class="fas fa-user w-5"></i> Personal Info
                         </button>
-                        
-                        <button type="button" onclick="switchTabStudent('edit', 'parents')" class="tab-btn-edit flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="parents">
-                            <i class="fas fa-users w-4 opacity-50"></i> Family Details
+                        <button type="button" onclick="switchTab('edit', 'parents')" class="tab-btn-edit text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="parents">
+                            <i class="fas fa-users w-5"></i> Parents
                         </button>
-
-                        <button type="button" onclick="switchTabStudent('edit', 'medical')" class="tab-btn-edit flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="medical">
-                            <i class="fas fa-heartbeat w-4 opacity-50"></i> Health Records
+                        <button type="button" onclick="switchTab('edit', 'medical')" class="tab-btn-edit text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="medical">
+                            <i class="fas fa-heartbeat w-5"></i> Medical
                         </button>
-
-                        <button type="button" onclick="switchTabStudent('edit', 'transport')" class="tab-btn-edit flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="transport">
-                            <i class="fas fa-bus w-4 opacity-50"></i> Transport
+                        <button type="button" onclick="switchTab('edit', 'transport')" class="tab-btn-edit text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="transport">
+                            <i class="fas fa-bus w-5"></i> Transport
                         </button>
-
-                        <button type="button" onclick="switchTabStudent('edit', 'other')" class="tab-btn-edit flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-500 hover:bg-white hover:text-black" data-tab="other">
-                            <i class="fas fa-info-circle w-4 opacity-50"></i> Miscellaneous
+                        <button type="button" onclick="switchTab('edit', 'other')" class="tab-btn-edit text-left px-4 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-3 hover:bg-white hover:shadow-sm" data-tab="other">
+                            <i class="fas fa-info-circle w-5"></i> Other
                         </button>
                     </div>
 
-                    <div class="flex-1 overflow-y-auto p-10 bg-white">
+                    <div class="flex-1 overflow-y-auto p-6 bg-white relative">
                         
-                        <div id="edit-personal" class="tab-content-edit space-y-10 animate-in fade-in duration-300">
-                            <div>
-                                <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-6">Identity & Status</h4>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-8">
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase">First Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="first_name" id="edit_first_name" required class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black py-2.5">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase">Middle Name</label>
-                                        <input type="text" name="middle_name" id="edit_middle_name" class="block w-full rounded-md border-gray-200 text-sm py-2.5">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase">Last Name <span class="text-red-500">*</span></label>
-                                        <input type="text" name="last_name" id="edit_last_name" required class="block w-full rounded-md border-gray-200 text-sm py-2.5">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-400 uppercase flex items-center gap-2">
-                                            <i class="fas fa-lock text-[9px]"></i> Student ID (Internal)
-                                        </label>
-                                        <input type="text" name="student_id_no" id="edit_student_id_no" readonly class="block w-full rounded-md border-gray-100 bg-gray-50 text-gray-400 font-mono text-xs py-2.5 cursor-not-allowed">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase">NEMIS No.</label>
-                                        <input type="text" name="nemis_no" id="edit_nemis_no" class="block w-full rounded-md border-gray-200 text-sm py-2.5">
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">Enrollment Class</label>
-                                        <select name="class_id" id="edit_class_id" required class="block w-full rounded-md border-gray-200 text-sm py-2.5">
-                                            <?php foreach ($all_classes_for_dropdown as $class): ?>
-                                                <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                    </div>
-                                    <div class="space-y-1.5">
-                                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">Account Status</label>
-                                        <select name="status" id="edit_status" class="block w-full rounded-md border-gray-200 text-sm py-2.5 font-bold text-blue-600">
-                                            <option value="active">Active</option>
-                                            <option value="inactive">Inactive</option>
-                                        </select>
-                                    </div>
+                        <div id="edit-personal" class="tab-content-edit space-y-6">
+                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Basic Information</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">First Name <span class="text-red-500">*</span></label>
+                                    <input type="text" name="first_name" id="edit_first_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Middle Name</label>
+                                    <input type="text" name="middle_name" id="edit_middle_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Last Name <span class="text-red-500">*</span></label>
+                                    <input type="text" name="last_name" id="edit_last_name" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Student ID (Read Only)</label>
+                                    <input type="text" name="student_id_no" id="edit_student_id_no" readonly class="w-full rounded-lg border-gray-200 bg-gray-50 text-gray-500 sm:text-sm cursor-not-allowed">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">NEMIS No.</label>
+                                    <input type="text" name="nemis_no" id="edit_nemis_no" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Class</label>
+                                    <select name="class_id" id="edit_class_id" required class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                        <option value="">Select Class</option>
+                                        <?php foreach ($all_classes_for_dropdown as $class): ?>
+                                            <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Status</label>
+                                    <select name="status" id="edit_status" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                        <option value="active">Active</option>
+                                        <option value="inactive">Inactive</option>
+                                    </select>
                                 </div>
                             </div>
                         </div>
 
-                        <div id="edit-parents" class="tab-content-edit hidden space-y-10 animate-in fade-in duration-300">
-                            <div class="space-y-6">
-                                <div class="flex items-center gap-4">
-                                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap">Primary Contact (Father)</h4>
-                                    <div class="h-px bg-gray-100 w-full"></div>
+                        <div id="edit-parents" class="tab-content-edit hidden space-y-6">
+                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Father's Information</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">First Name</label>
+                                    <input type="text" name="father_first_name" id="edit_father_first_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
                                 </div>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">First Name</label><input type="text" name="father_first_name" id="edit_father_first_name" class="block w-full rounded-md border-gray-200 text-sm py-2.5"></div>
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">Last Name</label><input type="text" name="father_last_name" id="edit_father_last_name" class="block w-full rounded-md border-gray-200 text-sm py-2.5"></div>
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">Phone</label><input type="text" name="father_contact" id="edit_father_contact" class="block w-full rounded-md border-gray-200 text-sm py-2.5 font-mono"></div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Last Name</label>
+                                    <input type="text" name="father_last_name" id="edit_father_last_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Phone</label>
+                                    <input type="text" name="father_contact" id="edit_father_contact" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
                                 </div>
                             </div>
-
-                            <div class="space-y-6">
-                                <div class="flex items-center gap-4">
-                                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap">Secondary Contact (Mother)</h4>
-                                    <div class="h-px bg-gray-100 w-full"></div>
+                            
+                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2 mt-6">Mother's Information</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">First Name</label>
+                                    <input type="text" name="mother_first_name" id="edit_mother_first_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
                                 </div>
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">First Name</label><input type="text" name="mother_first_name" id="edit_mother_first_name" class="block w-full rounded-md border-gray-200 text-sm py-2.5"></div>
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">Last Name</label><input type="text" name="mother_last_name" id="edit_mother_last_name" class="block w-full rounded-md border-gray-200 text-sm py-2.5"></div>
-                                    <div class="space-y-1.5"><label class="text-[11px] font-bold text-gray-500 uppercase">Phone</label><input type="text" name="mother_contact" id="edit_mother_contact" class="block w-full rounded-md border-gray-200 text-sm py-2.5 font-mono"></div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Last Name</label>
+                                    <input type="text" name="mother_last_name" id="edit_mother_last_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Phone</label>
+                                    <input type="text" name="mother_contact" id="edit_mother_contact" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
                                 </div>
                             </div>
                         </div>
 
+                        <div id="edit-medical" class="tab-content-edit hidden space-y-6">
+                             <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Medical</h4>
+                             <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Doctor Name</label>
+                                    <input type="text" name="doctor_name" id="edit_doctor_name" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Medical Conditions</label>
+                                    <input type="text" name="long_term_condition" id="edit_long_term_condition" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                             </div>
+                        </div>
+                        
+                        <div id="edit-transport" class="tab-content-edit hidden space-y-6">
+                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Transport</h4>
+                             <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Zone</label>
+                                    <input type="text" name="transport_zone" id="edit_transport_zone" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                             </div>
                         </div>
 
-                    <div class="bg-gray-50 border-t border-gray-100 p-6 flex justify-end gap-3 sticky bottom-0 z-20">
-                        <button type="button" onclick="closeModal('editStudentModal')" class="px-5 py-2.5 rounded-lg text-xs font-bold text-gray-500 hover:text-black uppercase tracking-widest transition-colors">
+                         <div id="edit-other" class="tab-content-edit hidden space-y-6">
+                            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-wider border-b border-gray-100 pb-2">Other</h4>
+                             <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Sponsor</label>
+                                    <input type="text" name="sponsor" id="edit_sponsor" class="w-full rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                                </div>
+                             </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-50 border-t border-gray-200 p-4 flex justify-end gap-3 sticky bottom-0 z-20">
+                        <button type="button" onclick="closeModal('editStudentModal')" class="px-5 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors">
                             Cancel
                         </button>
-                        <button type="submit" class="px-8 py-2.5 rounded-lg bg-black text-white text-xs font-bold uppercase tracking-widest shadow-lg hover:bg-gray-800 transition-all flex items-center gap-2">
-                            Save Changes
+                        <button type="submit" class="px-5 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 shadow-sm transition-colors flex items-center gap-2">
+                            <i class="fas fa-save"></i> Update
                         </button>
                     </div>
                 </form>
@@ -1806,11 +2013,10 @@ function switchTab(tabId) {
         </div>
     </div>
 </div>
-<!-- End Student Modals -->
-<!-- Student Tab Content JS -->
+
 <script>
     // Tab Switching Logic
-    function switchTabStudent(modalType, tabName) {
+    function switchTab(modalType, tabName) {
         // 1. Hide all tab contents for this modal
         const contents = document.querySelectorAll(`.tab-content-${modalType}`);
         contents.forEach(content => content.classList.add('hidden'));
@@ -1833,704 +2039,22 @@ function switchTab(tabId) {
         }
     }
 
-    // Initialize first tabs on load
+    // Initialize first tabs on load (optional, or call on modal open)
     document.addEventListener('DOMContentLoaded', () => {
-        switchTabStudent('add', 'personal');
-        switchTabStudent('edit', 'personal');
+        switchTab('add', 'personal');
+        switchTab('edit', 'personal');
     });
-</script>
-<!-- End Student Tab Content JS -->
 
-<!-- End Student Tab Content -->
-
-<!-- Invoices Tab Content -->
-<div id="invoices" class="tab-content">
-    <div>
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-            <h1 class="text-2xl font-bold tracking-tight text-gray-900">Invoices</h1>
-            <p class="text-sm text-muted-foreground text-gray-500">Manage and track student billing and payments.</p>
-        </div>
-        <a href="create_invoice.php" class="inline-flex items-center justify-center rounded-md bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 transition-colors">
-            <i class="fas fa-plus mr-2 text-xs"></i> Create Invoice
-        </a>
-    </div>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <p class="text-sm font-medium text-gray-500">Total Invoiced</p>
-            <div class="mt-2 flex items-baseline gap-2">
-                <span class="text-2xl font-bold"><?= format_currency($invoice_metrics['total_invoiced']) ?></span>
-            </div>
-            <p class="mt-1 text-xs text-gray-400">All time</p>
-        </div>
-        </div>
-
-    <div class="rounded-lg border border-gray-200 bg-gray-50/50 p-4">
-        <form method="get" class="flex flex-wrap items-end gap-4">
-            <input type="hidden" name="tab" value="invoices">
-            
-            <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold uppercase tracking-wider text-gray-500">Student</label>
-                <select name="filter_invoice_student_id" class="h-9 w-[200px] rounded-md border border-gray-300 bg-white px-3 py-1 text-sm focus:ring-2 focus:ring-black">
-                    <option value="">All Students</option>
-                    <?php foreach($all_students_for_dropdown as $student): ?>
-                        <option value="<?= $student['id'] ?>" <?= ($filter_invoice_student_id == $student['id']) ? 'selected' : '' ?>><?= htmlspecialchars($student['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold uppercase tracking-wider text-gray-500">Status</label>
-                <select name="filter_invoice_status" class="h-9 w-[140px] rounded-md border border-gray-300 bg-white px-3 py-1 text-sm">
-                    <option value="">All Statuses</option>
-                    <option value="Paid">Paid</option>
-                    <option value="Unpaid">Unpaid</option>
-                </select>
-            </div>
-        </form>
-    </div>
-
-    <div class="rounded-md border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <table class="w-full text-sm text-left">
-            <thead class="bg-gray-50 border-b border-gray-200">
-                <tr>
-                    <th class="px-4 py-3 font-medium text-gray-500">ID</th>
-                    <th class="px-4 py-3 font-medium text-gray-500">Student</th>
-                    <th class="px-4 py-3 font-medium text-gray-500">Date</th>
-                    <th class="px-4 py-3 font-medium text-gray-500">Amount</th>
-                    <th class="px-4 py-3 font-medium text-gray-500">Status</th>
-                    <th class="px-4 py-3 text-right">Actions</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100">
-                <?php foreach($invoices as $inv): ?>
-                <tr class="hover:bg-gray-50/50 transition-colors">
-                    <td class="px-4 py-3 font-mono text-xs text-gray-500">#<?= $inv['id'] ?></td>
-                    <td class="px-4 py-3 font-medium text-gray-900"><?= htmlspecialchars($inv['student_name']) ?></td>
-                    <td class="px-4 py-3 text-gray-600"><?= date('M d, Y', strtotime($inv['invoice_date'])) ?></td>
-                    <td class="px-4 py-3 font-semibold">$<?= number_format($inv['total_amount'] ?? 0, 2) ?></td>
-                    <td class="px-4 py-3">
-                        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <?= htmlspecialchars($inv['status']) ?>
-                        </span>
-                    </td>
-                    <td class="px-4 py-3 text-right">
-                        <a href="view_invoice.php?id=<?= $inv['id'] ?>" class="text-gray-400 hover:text-black">
-                            <i class="fas fa-eye"></i>
-                        </a>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-    </div>
-
-</div>
-<!-- End Invoices Tab Content -->
-
-<!-- Fee Structure Tab Content -->
-<div id="fee_structure" class="tab-content">
-    <div class="space-y-8 max-w-7xl mx-auto p-4">
-
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-100 pb-6">
-        <div>
-            <h1 class="text-2xl font-bold tracking-tight text-gray-900">Fee Structure Management</h1>
-            <p class="text-sm text-gray-500">Define and manage mandatory or optional fees per class for <?= $current_academic_year ?>.</p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-            <button onclick="openModal('createBaseItemModal')" class="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 shadow-sm">
-                <i class="fas fa-tag mr-2 opacity-50"></i> Base Items
-            </button>
-            <button onclick="openModal('assignFeeItemModal')" class="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-black rounded-md hover:bg-gray-800 shadow-sm transition-all">
-                <i class="fas fa-plus mr-2 text-xs"></i> Assign Fee Item
-            </button>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-400">Total Items</p>
-            <p class="mt-2 text-3xl font-bold"><?= number_format($fee_metrics['total_items']) ?></p>
-            <p class="mt-1 text-xs text-emerald-600 font-medium">Base items defined</p>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-1 rounded-xl border border-gray-200 bg-gray-50/50 p-5">
-            <h4 class="text-sm font-semibold mb-4 flex items-center"><i class="fas fa-filter mr-2"></i> View Controls</h4>
-            <form method="get" class="space-y-4">
-                <input type="hidden" name="tab" value="fee_structure">
-                <div>
-                    <label class="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
-                    <input type="text" name="fs_year" class="w-full rounded-md border-gray-300 text-sm focus:ring-black focus:border-black" value="<?= htmlspecialchars($current_academic_year) ?>">
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-gray-500 mb-1">Term</label>
-                    <select name="fs_term" class="w-full rounded-md border-gray-300 text-sm">
-                        <option value="Term 1" <?= $current_term == 'Term 1' ? 'selected' : '' ?>>Term 1</option>
-                        <option value="Term 2" <?= $current_term == 'Term 2' ? 'selected' : '' ?>>Term 2</option>
-                        <option value="Term 3" <?= $current_term == 'Term 3' ? 'selected' : '' ?>>Term 3</option>
-                    </select>
-                </div>
-                <button type="submit" class="w-full bg-white border border-gray-300 py-2 rounded-md text-sm font-medium hover:bg-gray-50 shadow-sm">Load Structure</button>
-            </form>
-        </div>
-
-        <div class="lg:col-span-2 rounded-xl border border-dashed border-gray-300 p-5 flex flex-col justify-center bg-white">
-            <h4 class="text-sm font-semibold mb-3 flex items-center"><i class="fas fa-file-import mr-2"></i> Bulk Management</h4>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <form method="post" enctype="multipart/form-data" class="space-y-3">
-                    <p class="text-[11px] leading-tight text-gray-500 italic">Step 1: Upload Base Items (CSV)</p>
-                    <input type="file" name="base_items_csv" class="block w-full text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200">
-                    <button type="submit" name="upload_base_items" class="text-xs font-medium text-blue-600 hover:underline"><i class="fas fa-upload mr-1"></i> Start Upload</button>
-                </form>
-                </div>
-        </div>
-    </div>
-
-    <div class="space-y-3">
-        <?php foreach ($all_classes_for_dropdown as $class): 
-            if (!isset($fee_structure_by_class[$class['id']])) continue;
-            $class_fees = $fee_structure_by_class[$class['id']];
-            $total_mandatory_fee = array_sum(array_map(fn($item) => $item['is_mandatory'] ? $item['amount'] : 0, $class_fees['items']));
-        ?>
-        <div class="group border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm hover:border-gray-300 transition-all">
-            <button class="w-full flex items-center justify-between px-6 py-4 text-left focus:outline-none">
-                <span class="font-semibold text-gray-900"><?= htmlspecialchars($class_fees['name']) ?></span>
-                <div class="flex items-center gap-4">
-                    <span class="text-xs font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
-                        Mandatory: <span class="text-black font-bold">KSH <?= number_format($total_mandatory_fee, 2) ?></span>
-                    </span>
-                    <i class="fas fa-chevron-right text-xs text-gray-400 group-hover:translate-x-1 transition-transform"></i>
-                </div>
-            </button>
-
-            <div class="px-6 pb-6 border-t border-gray-50 pt-4 bg-gray-50/30">
-                <h5 class="text-xs font-bold uppercase text-gray-400 mb-3 tracking-widest">Mandatory Fee List</h5>
-                <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-                    <table class="min-w-full divide-y divide-gray-200 text-sm">
-                        <thead class="bg-gray-50/50">
-                            <tr>
-                                <th class="px-4 py-3 text-left font-semibold text-gray-600">Fee Item</th>
-                                <th class="px-4 py-3 text-left font-semibold text-gray-600">Frequency</th>
-                                <th class="px-4 py-3 text-right font-semibold text-gray-600">Amount</th>
-                                <th class="px-4 py-3 text-center font-semibold text-gray-600">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <tr class="hover:bg-gray-50/50">
-                                <td class="px-4 py-3 font-medium"><?= htmlspecialchars($item['item_name']) ?></td>
-                                <td class="px-4 py-3 text-xs text-gray-500">
-                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 font-medium bg-blue-50 text-blue-700 border border-blue-100">Annual</span>
-                                </td>
-                                <td class="px-4 py-3 text-right font-mono font-bold">KSH <?= number_format($item['amount'], 2) ?></td>
-                                <td class="px-4 py-3 text-center space-x-2 text-gray-400">
-                                    <button class="hover:text-blue-600"><i class="fas fa-edit"></i></button>
-                                    <button class="hover:text-red-600"><i class="fas fa-trash"></i></button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <?php endforeach; ?>
-    </div>
-    </div>
-</div>
-<!-- End Fee Structure Tab Content -->
-
-<!-- Invoice Templates Tab Content -->
-<div id="templates" class="tab-content space-y-6 max-w-5xl mx-auto">
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-            <h3 class="text-lg font-semibold text-gray-900">Manage Invoice Templates</h3>
-            <p class="text-sm text-gray-500">Edit or delete reusable templates for faster billing cycles.</p>
-        </div>
-        <a href="create_invoice.php" class="inline-flex items-center justify-center rounded-md bg-black px-4 py-2 text-sm font-medium text-white shadow hover:bg-gray-800 transition-all">
-            <i class="fas fa-plus mr-2 text-[10px]"></i> Create New Template
-        </a>
-    </div>
-
-    <?php if (empty($invoice_templates)): ?>
-        <div class="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 p-12 text-center">
-            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-gray-50">
-                <i class="fas fa-file-invoice text-gray-400"></i>
-            </div>
-            <h3 class="mt-4 text-sm font-semibold text-gray-900">No templates found</h3>
-            <p class="mt-1 text-sm text-gray-500">You haven't saved any reusable templates yet.</p>
-            <div class="mt-6">
-                <a href="create_invoice.php" class="text-sm font-medium text-black hover:underline">
-                    Save one from the 'Create Invoice' page &rarr;
-                </a>
-            </div>
-        </div>
-    <?php else: ?>
-        <div class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-            <table class="w-full text-sm text-left">
-                <thead class="border-b border-gray-100 bg-gray-50/50">
-                    <tr>
-                        <th class="px-6 py-4 font-semibold text-gray-900">Template Details</th>
-                        <th class="px-6 py-4 font-semibold text-gray-900">Linked Class</th>
-                        <th class="px-6 py-4 text-right font-semibold text-gray-900">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100">
-                    <?php foreach ($invoice_templates as $template): ?>
-                        <tr class="group hover:bg-gray-50/50 transition-colors">
-                            <td class="px-6 py-4">
-                                <div class="font-medium text-gray-900"><?= htmlspecialchars($template['name']); ?></div>
-                                <div class="text-xs text-gray-400 md:hidden">Click edit to modify settings</div>
-                            </td>
-                            <td class="px-6 py-4">
-                                <?php if ($template['class_name']): ?>
-                                    <span class="inline-flex items-center rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                                        <?= htmlspecialchars($template['class_name']); ?>
-                                    </span>
-                                <?php else: ?>
-                                    <span class="inline-flex items-center rounded-md bg-gray-50 px-2 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-500/10">
-                                        Not Linked
-                                    </span>
-                                <?php endif; ?>
-                            </td>
-                            <td class="px-6 py-4 text-right">
-                                <div class="flex justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button 
-                                        onclick='openEditTemplateModal(<?= htmlspecialchars(json_encode($template), ENT_QUOTES, "UTF-8") ?>)'
-                                        class="text-gray-400 hover:text-blue-600 transition-colors"
-                                        title="Edit Template">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
-                                    
-                                    <form action="customer_center.php" method="post" onsubmit="return confirm('Are you sure?');" class="inline">
-                                        <input type="hidden" name="active_tab" value="templates">
-                                        <input type="hidden" name="delete_template" value="1">
-                                        <input type="hidden" name="template_id" value="<?= $template['id']; ?>">
-                                        <button type="submit" class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    <?php endif; ?>
-</div>
-<!-- End Invoice Templates Tab Content -->
-
-<!-- Receive Payment Tab Content -->
-<div id="receive_payment" class="tab-content space-y-8 max-w-6xl mx-auto p-4">
-    <div class="space-y-4">
-        <div>
-            <h1 class="text-2xl font-bold tracking-tight text-gray-900">Receive Payment</h1>
-            <p class="text-sm text-gray-500">Record student payments and manage balances.</p>
-        </div>
-        
-        <div class="flex items-center gap-3 p-4 bg-blue-50 border border-blue-100 rounded-xl text-blue-800">
-            <i class="fas fa-info-circle text-blue-500"></i>
-            <p class="text-xs font-medium">
-                All payments recorded here will be added to <span class="font-bold underline text-blue-900 text-xs">Undeposited Funds</span>. 
-                You can group these into a bank deposit from the Banking page later.
-            </p>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Today's Payments</p>
-            <p class="mt-2 text-2xl font-bold text-gray-900"><?= format_currency($payment_metrics['today']) ?></p>
-            <p class="mt-1 text-xs text-emerald-600 font-medium italic">Collected today</p>
-        </div>
-        </div>
-
-    <form id="paymentForm" method="post" class="space-y-8">
-        <input type="hidden" name="active_tab" value="receipts">
-        <input type="hidden" name="process_payment" value="1">
-
-        <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
-            <div class="p-6 border-b border-gray-50 bg-gray-50/30">
-                <h4 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Payment Details</h4>
-            </div>
-            
-            <div class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div class="space-y-2 lg:col-span-2">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Student</label>
-                    <select name="student_id" id="student_id_payment" class="w-full h-10 rounded-lg border-gray-200 bg-gray-50/50 text-sm focus:bg-white focus:ring-2 focus:ring-black" required onchange="loadUnpaidData()">
-                        <option value="">Select a student...</option>
-                        <?php foreach ($all_students_for_dropdown as $student): ?>
-                            <option value="<?= $student['id'] ?>"><?= htmlspecialchars($student['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="space-y-2">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Payment Date</label>
-                    <input type="date" name="payment_date" id="payment_date" class="w-full h-10 rounded-lg border-gray-200 bg-gray-50/50 text-sm focus:bg-white focus:ring-2 focus:ring-black" value="<?= date('Y-m-d') ?>" required>
-                </div>
-
-                <div class="space-y-2">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Method</label>
-                    <select name="payment_method" id="payment_method" class="w-full h-10 rounded-lg border-gray-200 bg-gray-50/50 text-sm focus:bg-white focus:ring-2 focus:ring-black" required>
-                        <option>Cash</option>
-                        <option>Bank Transfer</option>
-                        <option>Mobile Money</option>
-                        <option>Check</option>
-                    </select>
-                </div>
-
-                <div class="space-y-2 lg:col-span-4">
-                    <label class="text-xs font-bold text-gray-500 uppercase">Memo / Reference</label>
-                    <textarea name="memo" id="memo" rows="2" class="w-full rounded-lg border-gray-200 bg-gray-50/50 text-sm focus:bg-white focus:ring-2 focus:ring-black" placeholder="Add optional transaction notes..."></textarea>
-                </div>
-            </div>
-        </div>
-
-        <div class="space-y-4">
-            <h4 class="text-sm font-bold text-gray-900 uppercase tracking-widest flex items-center">
-                <i class="fas fa-list-ul mr-2 text-gray-400"></i> Outstanding Invoices
-            </h4>
-            
-            <div class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-                <table id="unpaidInvoicesTable" class="w-full text-sm text-left">
-                    <thead class="bg-gray-50 text-[10px] font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100">
-                        <tr>
-                            <th class="px-6 py-4"># Inv</th>
-                            <th class="px-6 py-4">Date</th>
-                            <th class="px-6 py-4">Original Total</th>
-                            <th class="px-6 py-4">Already Paid</th>
-                            <th class="px-6 py-4 text-blue-600">Balance Due</th>
-                            <th class="px-6 py-4 text-right">Payment Applied</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-50">
-                        <tr class="hover:bg-gray-50/50 transition-colors">
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-400 italic">
-                                Select a student above to view outstanding balances.
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="flex flex-col md:flex-row items-center justify-between gap-6 pt-6 border-t border-gray-100">
-            <div class="flex items-baseline gap-4">
-                <span class="text-sm font-medium text-gray-500 uppercase tracking-wider">Total Payment Amount:</span>
-                <span id="totalPayment" class="text-3xl font-black text-black tracking-tighter"><?= format_currency(0) ?></span>
-            </div>
-            <button type="submit" class="w-full md:w-auto px-10 py-3 bg-black text-white text-sm font-bold rounded-xl shadow-lg hover:bg-gray-800 hover:shadow-xl active:scale-95 transition-all">
-                Record Payment
-            </button>
-        </div>
-    </form>
-</div>
-<!-- End Receive Payment Tab Content -->
-
-<!-- Statements Tab Content -->
-<div id="statements" class="tab-content space-y-6 max-w-4xl mx-auto p-4">
-    <div class="flex flex-col gap-1">
-        <h3 class="text-xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
-            <i class="fas fa-file-invoice text-gray-400 text-sm"></i> Create Financial Statements
-        </h3>
-        <p class="text-sm text-gray-500">Generate PDF summaries of billings and payments for specific periods.</p>
-    </div>
-
-    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-        <form id="statementForm" method="post" action="generate_statements.php" target="_blank" class="divide-y divide-gray-100">
-            
-            <div class="p-8 space-y-6">
-                <div class="flex items-center gap-4 mb-2">
-                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-black text-[10px] font-bold text-white">1</span>
-                    <h4 class="text-xs font-bold text-gray-900 uppercase tracking-widest">Select Scope</h4>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="space-y-2">
-                        <label class="text-[11px] font-bold text-gray-500 uppercase">Generate For</label>
-                        <select name="statement_type" id="statement_type" class="block w-full rounded-lg border-gray-200 text-sm focus:ring-black focus:border-black py-2.5 transition-all" required onchange="toggleStatementSelectors()">
-                            <option value="all">All Active Students</option>
-                            <option value="class">A Specific Class</option>
-                            <option value="student">A Specific Student</option>
-                        </select>
-                    </div>
-
-                    <div id="statement_class_selector" class="space-y-2 hidden animate-in slide-in-from-top-2 duration-200">
-                        <label class="text-[11px] font-bold text-gray-500 uppercase">Target Class</label>
-                        <select name="class_id" id="statement_class_id" class="block w-full rounded-lg border-gray-200 text-sm py-2.5">
-                            <option value="">-- Select Class --</option>
-                            <?php foreach ($all_classes_for_dropdown as $class): ?>
-                                <option value="<?= $class['id']; ?>"><?= htmlspecialchars($class['name']); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div id="statement_student_selector" class="space-y-2 hidden animate-in slide-in-from-top-2 duration-200">
-                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-tight">Search Student</label>
-                        <select name="student_id" id="statement_student_id" class="block w-full rounded-lg border-gray-200 text-sm py-2.5">
-                            <option value="">-- Select Student --</option>
-                            <?php foreach ($all_students_for_dropdown as $student): ?>
-                                <option value="<?= $student['id']; ?>"><?= htmlspecialchars($student['name']); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="p-8 space-y-6 bg-gray-50/30">
-                <div class="flex items-center gap-4 mb-2">
-                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-black text-[10px] font-bold text-white">2</span>
-                    <h4 class="text-xs font-bold text-gray-900 uppercase tracking-widest">Reporting Period</h4>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="space-y-2">
-                        <label class="text-[11px] font-bold text-gray-500 uppercase">Date From</label>
-                        <div class="relative">
-                            <input type="date" name="date_from" id="statement_date_from" class="block w-full rounded-lg border-gray-200 text-sm focus:ring-black focus:border-black py-2.5" required>
-                        </div>
-                    </div>
-                    <div class="space-y-2">
-                        <label class="text-[11px] font-bold text-gray-500 uppercase">Date To</label>
-                        <div class="relative">
-                            <input type="date" name="date_to" id="statement_date_to" class="block w-full rounded-lg border-gray-200 text-sm focus:ring-black focus:border-black py-2.5" required value="<?= date('Y-m-d') ?>">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="p-8 bg-white flex items-center justify-between">
-                <div class="flex items-center gap-2 text-gray-400">
-                    <i class="fas fa-file-pdf text-lg"></i>
-                    <span class="text-xs font-medium">Generated as PDF document</span>
-                </div>
-                <button type="submit" class="inline-flex items-center gap-2 px-8 py-3 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-xl shadow-lg hover:bg-gray-800 active:scale-95 transition-all">
-                    <i class="fas fa-file-alt text-[10px]"></i> Generate Statements
-                </button>
-            </div>
-        </form>
-    </div>
-
-    <p class="text-center text-[11px] text-gray-400">
-        <i class="fas fa-lightbulb mr-1 text-amber-400"></i> Tip: Statements include all finalized invoices and recorded payments within the range.
-    </p>
-</div>
-<script>
-    function toggleStatementSelectors() {
-    const type = document.getElementById('statement_type').value;
-    const classBox = document.getElementById('statement_class_selector');
-    const studentBox = document.getElementById('statement_student_selector');
-
-    // Reset visibility
-    classBox.classList.add('hidden');
-    studentBox.classList.add('hidden');
-
-    if (type === 'class') {
-        classBox.classList.remove('hidden');
-    } else if (type === 'student') {
-        studentBox.classList.remove('hidden');
+    function closeModal(id) {
+        document.getElementById(id).classList.add('hidden');
     }
-}
+    
+    function openModal(id) {
+        document.getElementById(id).classList.remove('hidden');
+        // Reset tabs when opening edit modal
+        if(id === 'editStudentModal') switchTab('edit', 'personal');
+    }
 </script>
-<!-- End Statements Tab Content -->
-
-<!-- Receipts Tab Content -->
-<div id="receipts" class="tab-content space-y-8 max-w-6xl mx-auto p-4">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-            <h1 class="text-2xl font-bold tracking-tight text-gray-900">Payment Receipts</h1>
-            <p class="text-sm text-gray-500">History of all student payments and transaction logs.</p>
-        </div>
-        <div class="flex items-center gap-2">
-             <button class="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 shadow-sm transition-all">
-                <i class="fas fa-download mr-2 text-xs opacity-50"></i> Export CSV
-            </button>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Total Receipts</p>
-            <p class="mt-2 text-2xl font-bold text-gray-900"><?= number_format($payment_metrics['total_receipts']) ?></p>
-            <p class="mt-1 text-xs text-gray-500 italic">All records</p>
-        </div>
-        
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400">This Month</p>
-            <p class="mt-2 text-2xl font-bold text-gray-900"><?= number_format($payment_metrics['receipts_this_month']) ?></p>
-            <p class="mt-1 text-xs text-emerald-600 font-medium">Recent payments</p>
-        </div>
-
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Avg Payment</p>
-            <p class="mt-2 text-2xl font-bold text-gray-900">
-                <?= format_currency($payment_metrics['total_receipts'] > 0 ? $payment_metrics['total_collected'] / $payment_metrics['total_receipts'] : 0) ?>
-            </p>
-            <p class="mt-1 text-xs text-gray-500 italic">Per receipt</p>
-        </div>
-
-        <div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm bg-gray-900">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Total Collected</p>
-            <p class="mt-2 text-2xl font-bold text-white"><?= format_currency($payment_metrics['total_collected']) ?></p>
-            <p class="mt-1 text-xs text-gray-400 italic">Lifetime revenue</p>
-        </div>
-    </div>
-
-    <div class="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <table class="w-full text-sm text-left border-collapse">
-            <thead class="bg-gray-50 border-b border-gray-100">
-                <tr>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest">Receipt #</th>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest">Student</th>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest">Date</th>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest">Amount</th>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest">Method</th>
-                    <th class="px-6 py-4 text-[10px] font-bold uppercase text-gray-400 tracking-widest text-right">Actions</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-50">
-                <?php foreach($all_receipts as $receipt): ?>
-                <tr class="hover:bg-gray-50/50 transition-colors group">
-                    <td class="px-6 py-4">
-                        <span class="font-mono text-xs font-semibold text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                            <?= htmlspecialchars($receipt['receipt_number']) ?>
-                        </span>
-                    </td>
-                    <td class="px-6 py-4">
-                        <div class="font-semibold text-gray-900"><?= htmlspecialchars($receipt['student_name']) ?></div>
-                    </td>
-                    <td class="px-6 py-4 text-gray-500">
-                        <?= date('M d, Y', strtotime($receipt['payment_date'])) ?>
-                    </td>
-                    <td class="px-6 py-4 font-mono font-bold text-gray-900">
-                        $<?= number_format($receipt['amount'], 2) ?>
-                    </td>
-                    <td class="px-6 py-4">
-                        <span class="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-700/10">
-                            <?= htmlspecialchars($receipt['payment_method']) ?>
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 text-right">
-                        <button 
-                            onclick="viewReceipt(<?= $receipt['id'] ?>)" 
-                            class="text-gray-400 hover:text-black transition-colors p-2 rounded-lg hover:bg-gray-100"
-                            title="View Receipt">
-                            <i class="fas fa-eye"></i>
-                        </button>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
-<!-- End Receipts Tab Content -->
-
-<!-- Bulk Messaging Tab Content -->
-   <div id="bulk_messaging" class="tab-content space-y-8 max-w-4xl mx-auto p-4">
-    <div class="flex items-start justify-between border-b border-gray-100 pb-6">
-        <div>
-            <h3 class="text-xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
-                <i class="fas fa-paper-plane text-gray-400 text-sm"></i> Communications Hub
-            </h3>
-            <p class="text-sm text-gray-500 mt-1">Send bulk SMS or Email notifications to your school community.</p>
-        </div>
-    </div>
-
-    <form id="bulkMessageForm" method="post" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <input type="hidden" name="active_tab" value="bulk_messaging">
-        <input type="hidden" name="send_bulk_message" value="1">
-
-        <div class="lg:col-span-1 space-y-6">
-            <div class="space-y-2">
-                <label class="text-[11px] font-bold text-gray-500 uppercase tracking-widest">1. Choose Recipients</label>
-                <select name="send_to_group" id="send_to_group" class="block w-full rounded-lg border-gray-200 text-sm focus:ring-black focus:border-black py-2.5" required onchange="toggleMessagingSelectors()">
-                    <option value="">-- Select Group --</option>
-                    <optgroup label="Standard Messages">
-                        <option value="class">Specific Class</option>
-                        <option value="unpaid">Unpaid Invoices Only</option>
-                        <option value="all">All Active Students</option>
-                    </optgroup>
-                    <optgroup label="Reports & Links">
-                        <option value="unpaid_invoices_link">Invoice Links (Unpaid)</option>
-                        <option value="class_statements_link">Class Statement Links</option>
-                        <option value="all_statements_link">All Statement Links</option>
-                    </optgroup>
-                </select>
-            </div>
-
-            <div id="class-messaging-container" class="space-y-2 hidden animate-in slide-in-from-top-2 duration-200">
-                <label class="text-[11px] font-bold text-gray-500 uppercase">Target Class</label>
-                <select name="class_id_messaging" id="class_id_messaging" class="block w-full rounded-lg border-gray-200 text-sm">
-                    <option value="">-- Select Class --</option>
-                    <?php foreach ($all_classes_for_dropdown as $class): ?>
-                        <option value="<?= $class['id']; ?>"><?= htmlspecialchars($class['name']); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <div id="statement-date-range-container" class="hidden space-y-4 p-4 bg-gray-50 rounded-xl border border-gray-100 animate-in slide-in-from-top-2 duration-200">
-                <p class="text-[10px] font-bold text-blue-600 uppercase">Statement Period</p>
-                <div class="space-y-3">
-                    <input type="date" name="statement_link_date_from" class="block w-full rounded-md border-gray-200 text-xs py-2" value="<?= date('Y-m-01') ?>">
-                    <input type="date" name="statement_link_date_to" class="block w-full rounded-md border-gray-200 text-xs py-2" value="<?= date('Y-m-d') ?>">
-                </div>
-            </div>
-
-            <div class="space-y-2">
-                <label class="text-[11px] font-bold text-gray-500 uppercase tracking-widest">2. Quick Template</label>
-                <select id="message_template_select" class="block w-full rounded-lg border-gray-200 text-xs py-2.5 bg-gray-50 hover:bg-white transition-colors">
-                    <option value="">-- No Template --</option>
-                    <?php foreach ($message_templates as $title => $template_text): ?>
-                        <option value="<?= htmlspecialchars($template_text) ?>"><?= htmlspecialchars($title) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-        </div>
-
-        <div class="lg:col-span-2 space-y-6">
-            <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col h-full">
-                <div class="p-4 border-b border-gray-50 bg-gray-50/50 flex justify-between items-center">
-                    <span class="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Message Composer</span>
-                    <div class="flex gap-1">
-                        <span class="h-2 w-2 rounded-full bg-red-400"></span>
-                        <span class="h-2 w-2 rounded-full bg-amber-400"></span>
-                        <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                    </div>
-                </div>
-                
-                <div class="p-6 space-y-4 flex-1">
-                    <textarea name="message_body" id="message_body" rows="8" class="block w-full border-0 p-0 text-gray-900 placeholder:text-gray-400 focus:ring-0 sm:text-sm sm:leading-6 resize-none" required placeholder="Dear [student_name], your current balance is [balance]..."></textarea>
-                    
-                    <div class="pt-6 border-t border-gray-50">
-                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Available Placeholders</p>
-                        <div class="flex flex-wrap gap-2">
-                            <span class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-700/10 cursor-help" title="School Name">[school_name]</span>
-                            <span class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-700/10 cursor-help" title="Student Full Name">[student_name]</span>
-                            <span class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-700/10 cursor-help" title="Outstanding Balance">[balance]</span>
-                            <span class="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-700/10 cursor-help" title="Invoice/Statement Link">[link]</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="p-4 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-4">
-                    <p class="text-[11px] text-gray-400 italic">Please verify recipients before sending.</p>
-                    <button type="submit" class="inline-flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-xl shadow-lg hover:bg-gray-800 transition-all active:scale-95">
-                        <i class="fas fa-paper-plane text-[10px]"></i> Send
-                    </button>
-                </div>
-            </div>
-        </div>
-    </form>
-</div>
-<!-- End Bulk Messaging Tab Content -->
-</div>
-
-
 
 
 <div id="viewReceiptModal" class="modal"><div class="modal-content" style="max-width: 500px;"><div class="modal-header"><h3>Receipt Details</h3><span class="close" onclick="closeModal('viewReceiptModal')">&times;</span></div><div class="modal-body" id="receipt-details-body"><p>Loading...</p></div><div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('viewReceiptModal')">Close</button><button type="button" class="btn-primary" onclick="printReceipt()">Print Receipt</button></div></div></div>
@@ -2675,50 +2199,15 @@ function formatCurrencyJS(amount) {
 }
 
 // --- Core UI Functions ---
-function openModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (!modal) return;
-    // Support both display and classList approaches
-    modal.style.display = 'block';
-    modal.classList.remove('hidden');
-    // Reset student modal tabs when opening
-    if (modalId === 'addStudentModal' && typeof switchTabStudent === 'function') {
-        switchTabStudent('add', 'personal');
-    }
-    if (modalId === 'editStudentModal' && typeof switchTabStudent === 'function') {
-        switchTabStudent('edit', 'personal');
-    }
-}
-function closeModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (!modal) return;
-    modal.style.display = 'none';
-    modal.classList.add('hidden');
-}
-
+function openModal(modalId) { document.getElementById(modalId).style.display = 'block'; }
+function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
 function openTab(evt, tabName) {
-    // Hide all tab content by removing active class
-    document.querySelectorAll(".tab-content").forEach(tc => {
-        tc.classList.remove("active");
-        // Remove any inline styles that might interfere
-        tc.style.display = "";
-    });
-    
-    // Remove active class from all tab links
+    document.querySelectorAll(".tab-content").forEach(tc => tc.style.display = "none");
     document.querySelectorAll(".tab-link").forEach(tl => tl.classList.remove("active"));
-
-    // Show selected tab content
-    const targetTab = document.getElementById(tabName);
-    if (targetTab) {
-        targetTab.classList.add("active");
-    }
-
-    // Mark clicked button as active
+    document.getElementById(tabName).style.display = "block";
     if (evt && evt.currentTarget) {
         evt.currentTarget.classList.add("active");
     }
-
-    // Update URL without reload
     if (history.pushState) {
         let newurl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?tab=' + tabName;
         window.history.pushState({path:newurl},'',newurl);
