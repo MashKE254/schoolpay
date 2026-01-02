@@ -100,13 +100,10 @@ try {
             COALESCE(SUM(i.total_amount), 0) AS totalInvoiced,
             COALESCE(SUM(i.amount_paid), 0) AS totalPaid
         FROM invoices i
-        WHERE i.school_id = :school_id
-        AND i.student_id IN (SELECT id FROM students WHERE class_id = :class_id AND school_id = :school_id)
+        WHERE i.school_id = ?
+        AND i.student_id IN (SELECT id FROM students WHERE class_id = ? AND school_id = ?)
     ");
-    $stmt_summary->execute([
-        ':class_id' => $class_id,
-        ':school_id' => $school_id
-    ]);
+    $stmt_summary->execute([$school_id, $class_id, $school_id]);
     $summary = $stmt_summary->fetch(PDO::FETCH_ASSOC);
 
     $totalInvoiced = (float)($summary['totalInvoiced'] ?? 0);

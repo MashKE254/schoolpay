@@ -107,90 +107,129 @@ $pageClass = (basename($_SERVER['PHP_SELF']) == 'index.php') ? 'dashboard-page' 
     </script>
 </head>
 <body class="bg-gray-50 <?php echo $pageClass; ?>">
-<?php if (!$is_public_page): // Only show header if not on login/register page ?>
-<!-- Modern Header with Tailwind -->
-<header class="bg-gradient-to-r from-slate-800 via-slate-900 to-slate-800 shadow-xl">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <!-- Top Bar -->
-        <div class="flex items-center justify-between h-16">
-            <!-- Brand -->
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg">
-                    <i class="fas fa-graduation-cap text-white text-lg"></i>
-                </div>
-                <div>
-                    <h1 class="text-white font-bold text-lg leading-tight"><?= htmlspecialchars($current_school_name) ?></h1>
-                    <p class="text-slate-400 text-xs">Finance Management</p>
-                </div>
-            </div>
+<?php if (!$is_public_page): // Only show sidebar if not on login/register page ?>
+<?php
+$nav_items = [
+    ['href' => 'index.php', 'icon' => 'fa-home', 'label' => 'Home'],
+    ['href' => 'customer_center.php', 'icon' => 'fa-users', 'label' => 'Customers'],
+    ['href' => 'expense_management.php', 'icon' => 'fa-receipt', 'label' => 'Expenses'],
+    ['href' => 'banking.php', 'icon' => 'fa-university', 'label' => 'Banking'],
+    ['href' => 'payroll.php', 'icon' => 'fa-money-check-alt', 'label' => 'Payroll'],
+    ['href' => 'budget.php', 'icon' => 'fa-calculator', 'label' => 'Budget'],
+    ['href' => 'reports.php', 'icon' => 'fa-chart-bar', 'label' => 'Reports'],
+    ['href' => 'bulk_actions.php', 'icon' => 'fa-cogs', 'label' => 'Bulk Actions'],
+    ['href' => 'inventory.php', 'icon' => 'fa-boxes', 'label' => 'Inventory'],
+];
+$settings_items = [
+    ['href' => 'profile.php', 'icon' => 'fa-user-cog', 'label' => 'Profile'],
+];
+?>
 
-            <!-- Right Actions -->
-            <div class="flex items-center gap-4">
-                <!-- Notifications -->
-                <button class="relative p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
-                    <i class="fas fa-bell text-lg"></i>
-                    <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center">3</span>
-                </button>
-
-                <!-- User Menu -->
-                <div class="flex items-center gap-3">
-                    <div class="w-9 h-9 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                        <?= strtoupper(substr($user_name, 0, 2)) ?>
-                    </div>
-                    <div class="hidden sm:block">
-                        <p class="text-white text-sm font-medium"><?= htmlspecialchars($user_name) ?></p>
-                        <a href="logout.php" class="text-slate-400 text-xs hover:text-red-400 transition-colors">Logout</a>
-                    </div>
-                </div>
-
-                <!-- Mobile Menu Toggle -->
-                <button class="lg:hidden p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg" onclick="toggleMobileMenu()">
-                    <i class="fas fa-bars text-xl"></i>
-                </button>
-            </div>
+<!-- Mobile Header -->
+<header class="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 px-4 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg flex items-center justify-center">
+            <i class="fas fa-graduation-cap text-white text-sm"></i>
         </div>
+        <span class="font-semibold text-gray-900 text-sm"><?= htmlspecialchars($current_school_name) ?></span>
+    </div>
+    <button onclick="toggleSidebar()" class="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
+        <i class="fas fa-bars text-lg"></i>
+    </button>
+</header>
 
-        <!-- Navigation -->
-        <nav class="hidden lg:block border-t border-slate-700">
-            <div class="flex items-center gap-1 py-2 overflow-x-auto">
-                <?php
-                $nav_items = [
-                    ['href' => 'index.php', 'icon' => 'fa-tachometer-alt', 'label' => 'Dashboard'],
-                    ['href' => 'customer_center.php', 'icon' => 'fa-users', 'label' => 'Customers'],
-                    ['href' => 'expense_management.php', 'icon' => 'fa-receipt', 'label' => 'Expenses'],
-                    ['href' => 'banking.php', 'icon' => 'fa-university', 'label' => 'Banking'],
-                    ['href' => 'payroll.php', 'icon' => 'fa-money-check-alt', 'label' => 'Payroll'],
-                    ['href' => 'budget.php', 'icon' => 'fa-calculator', 'label' => 'Budget'],
-                    ['href' => 'reports.php', 'icon' => 'fa-chart-bar', 'label' => 'Reports'],
-                    ['href' => 'bulk_actions.php', 'icon' => 'fa-cogs', 'label' => 'Bulk Actions'],
-                    ['href' => 'inventory.php', 'icon' => 'fa-boxes', 'label' => 'Inventory'],
-                    ['href' => 'profile.php', 'icon' => 'fa-user-cog', 'label' => 'Profile'],
-                ];
-                foreach ($nav_items as $item):
-                    $is_active = basename($_SERVER['PHP_SELF']) == $item['href'];
-                ?>
-                <a href="<?= $item['href'] ?>" class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all whitespace-nowrap <?= $is_active ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-300 hover:bg-slate-700 hover:text-white' ?>">
-                    <i class="fas <?= $item['icon'] ?>"></i>
-                    <span><?= $item['label'] ?></span>
-                </a>
-                <?php endforeach; ?>
+<!-- Sidebar Overlay (Mobile) -->
+<div id="sidebarOverlay" onclick="toggleSidebar()" class="lg:hidden fixed inset-0 bg-black/50 z-40 hidden"></div>
+
+<!-- Sidebar -->
+<aside id="sidebar" class="fixed top-0 left-0 z-50 h-screen w-64 bg-white border-r border-gray-200 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform duration-200 ease-in-out">
+
+    <!-- Logo -->
+    <div class="p-5 border-b border-gray-100">
+        <div class="flex items-center gap-3">
+            <div class="w-9 h-9 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg flex items-center justify-center shadow-sm">
+                <i class="fas fa-graduation-cap text-white"></i>
             </div>
-        </nav>
+            <span class="font-bold text-gray-900"><?= htmlspecialchars($current_school_name) ?></span>
+        </div>
+    </div>
 
-        <!-- Mobile Navigation -->
-        <nav class="nav-links lg:hidden hidden flex-col gap-1 py-4 border-t border-slate-700">
+    <!-- User Profile -->
+    <div class="p-4 border-b border-gray-100">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-full flex items-center justify-center text-white font-semibold text-sm shadow-sm">
+                <?= strtoupper(substr($user_name, 0, 2)) ?>
+            </div>
+            <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-gray-900 truncate"><?= htmlspecialchars($user_name) ?></p>
+                <p class="text-xs text-gray-500">Administrator</p>
+            </div>
+            <button class="text-gray-400 hover:text-gray-600">
+                <i class="fas fa-chevron-down text-xs"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Search -->
+    <div class="p-4">
+        <div class="relative">
+            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+            <input type="text" placeholder="Search" class="w-full pl-9 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all">
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="flex-1 overflow-y-auto px-3 py-2">
+        <ul class="space-y-1">
             <?php foreach ($nav_items as $item):
                 $is_active = basename($_SERVER['PHP_SELF']) == $item['href'];
             ?>
-            <a href="<?= $item['href'] ?>" class="flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-all <?= $is_active ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white' ?>">
-                <i class="fas <?= $item['icon'] ?> w-5"></i>
-                <span><?= $item['label'] ?></span>
-            </a>
+            <li>
+                <a href="<?= $item['href'] ?>" class="flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-all <?= $is_active ? 'bg-violet-50 text-violet-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900' ?>">
+                    <i class="fas <?= $item['icon'] ?> w-5 text-center <?= $is_active ? 'text-violet-600' : 'text-gray-400' ?>"></i>
+                    <span><?= $item['label'] ?></span>
+                </a>
+            </li>
             <?php endforeach; ?>
-        </nav>
+        </ul>
+
+        <!-- Settings Section -->
+        <div class="mt-6 pt-6 border-t border-gray-100">
+            <p class="px-3 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">Settings</p>
+            <ul class="space-y-1">
+                <?php foreach ($settings_items as $item):
+                    $is_active = basename($_SERVER['PHP_SELF']) == $item['href'];
+                ?>
+                <li>
+                    <a href="<?= $item['href'] ?>" class="flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-all <?= $is_active ? 'bg-violet-50 text-violet-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900' ?>">
+                        <i class="fas <?= $item['icon'] ?> w-5 text-center <?= $is_active ? 'text-violet-600' : 'text-gray-400' ?>"></i>
+                        <span><?= $item['label'] ?></span>
+                    </a>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Logout -->
+    <div class="p-4 border-t border-gray-100">
+        <a href="logout.php" class="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-all">
+            <i class="fas fa-sign-out-alt w-5 text-center"></i>
+            <span>Logout</span>
+        </a>
     </div>
-</header>
+</aside>
+
+<script>
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    sidebar.classList.toggle('-translate-x-full');
+    overlay.classList.toggle('hidden');
+}
+</script>
 <?php endif; ?>
 
 <!-- Main Container -->
+<div class="<?= !$is_public_page ? 'lg:ml-64 pt-14 lg:pt-0' : '' ?>">
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">

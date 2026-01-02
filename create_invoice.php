@@ -1,48 +1,34 @@
 <?php
-// Start output buffering to prevent "headers already sent" errors.
 ob_start();
 
-// Include necessary configuration, functions, and header files.
 require_once 'config.php';
 require_once 'functions.php';
-require_once 'header.php'; // This now handles session and sets $school_id
+require_once 'header.php'; // Ensure this includes Tailwind CSS CDN or your local build
 
 // =================================================================
-// SECTION 1: PHP DATA PROCESSING
+// SECTION 1: PHP DATA PROCESSING (Your Logic)
 // =================================================================
 
-// HANDLER 1.1: Save New Invoice Template
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['saveTemplate'])) {
     try {
         $templateName = trim($_POST['template_name']);
         $itemsJson = $_POST['template_items'];
-        // Get the class_id, allowing it to be null if not selected
         $class_id = !empty($_POST['class_id']) ? intval($_POST['class_id']) : null;
 
         if (empty($templateName) || empty($itemsJson) || $itemsJson === '[]') {
-            throw new Exception("Template name and at least one item are required.");
+            throw new Exception("Template name and items are required.");
         }
         
-        // Updated SQL query to include class_id
         $stmt = $pdo->prepare("INSERT INTO invoice_templates (school_id, name, class_id, items) VALUES (?, ?, ?, ?)");
-        
-        // Updated execute call with the new class_id variable
         if ($stmt->execute([$school_id, $templateName, $class_id, $itemsJson])) {
-            // Redirect to prevent form resubmission and to show the new template in the list
             header("Location: " . $_SERVER['PHP_SELF'] . "?success=template_saved");
             exit;
-        } else {
-            throw new Exception("Database error: Could not save the template.");
         }
-    } catch (Exception $e) {
-        $error = "Error saving template: " . $e->getMessage();
-    }
+    } catch (Exception $e) { $error = $e->getMessage(); }
 }
 
-// HANDLER 1.2: Create New Invoice (Single or Bulk)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createInvoice'])) {
     try {
-        // Use null coalescing operator to prevent warning and provide a safe default
         $invoice_type = $_POST['invoice_type'] ?? 'single';
         $invoice_date = $_POST['invoice_date'];
         $due_date = $_POST['due_date'];
@@ -51,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createInvoice'])) {
         $items = [];
         if (isset($_POST['item_id'])) {
             foreach ($_POST['item_id'] as $key => $item_id) {
-                if (!empty($item_id) && isset($_POST['quantity'][$key]) && $_POST['quantity'][$key] > 0) {
+                if (!empty($item_id) && $_POST['quantity'][$key] > 0) {
                     $items[] = [
                         'item_id' => $item_id,
                         'description' => $_POST['description'][$key] ?? '',
@@ -61,279 +47,282 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['createInvoice'])) {
                 }
             }
         }
-        if (empty($items)) {
-            throw new Exception("An invoice must have at least one valid item with a quantity greater than zero.");
-        }
+        if (empty($items)) throw new Exception("At least one valid item is required.");
 
         if ($invoice_type === 'single') {
             $student_id = intval($_POST['student_id']);
-            if (empty($student_id)) {
-                throw new Exception("A student must be selected for a single invoice.");
-            }
-            
             $invoice_id = createInvoice($pdo, $school_id, $student_id, $invoice_date, $due_date, $items, $notes);
-
-            log_audit($pdo, 'CREATE', 'invoices', $invoice_id, ['data' => [
-                'id' => $invoice_id, 'student_id' => $student_id, 'date' => $invoice_date, 'items_count' => count($items)
-            ]]);
-            
             header("Location: view_invoice.php?id=" . $invoice_id);
             exit;
         } elseif ($invoice_type === 'class') {
             $class_id = intval($_POST['class_id']);
-            if (empty($class_id)) {
-                throw new Exception("A class must be selected for bulk invoicing.");
-            }
             $students_in_class = getStudentsByClass($pdo, $class_id, $school_id);
-            if (empty($students_in_class)) {
-                throw new Exception("No active students found in the selected class.");
-            }
-
-            $created_count = 0;
             foreach ($students_in_class as $student) {
                 createInvoice($pdo, $school_id, $student['id'], $invoice_date, $due_date, $items, $notes);
-                $created_count++;
             }
-            $_SESSION['success'] = "Successfully created " . $created_count . " invoices for the class.";
+            $_SESSION['success'] = "Bulk invoices created successfully.";
             header("Location: customer_center.php?tab=invoices");
             exit;
         }
-    } catch (Exception $e) {
-        $error = "Error creating invoice: " . $e->getMessage();
-    }
+    } catch (Exception $e) { $error = $e->getMessage(); }
 }
 
-
-// =================================================================
-// SECTION 2: DATA RETRIEVAL FOR FORM
-// =================================================================
+// Data Retrieval
 $students = getStudents($pdo, $school_id, null, null, 'active');
-// This function gets a simple list of all base fee items
 $items_list = getItems($pdo, $school_id);
 $classes = getClasses($pdo, $school_id);
-
 $stmt = $pdo->prepare("SELECT id, name FROM invoice_templates WHERE school_id = ? ORDER BY name ASC");
 $stmt->execute([$school_id]);
 $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
 ?>
-<style>
-    :root {
-        --primary-color: #2c7be5;
-        --secondary-color: #f1f4f8;
-        --border-color: #d8e2ef;
-        --text-color: #50668d;
-        --text-dark: #12263f;
-        --danger-color: #e63757;
-        --white-color: #fff;
-    }
 
-    .invoice-creation-page {
-        background-color: var(--white-color);
-        border: 1px solid var(--border-color);
-        border-radius: 0.5rem;
-        padding: 2rem;
-        max-width: 1200px;
-        margin: 2rem auto;
-    }
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 
-    .invoice-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--border-color); padding-bottom: 1.5rem; margin-bottom: 1.5rem; }
-    .invoice-header .logo-container { font-size: 1.5rem; font-weight: bold; color: var(--text-dark); }
-    .invoice-header h1 { margin: 0; font-size: 2rem; text-align: right; }
-    .invoice-details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin-bottom: 2rem; }
-    .form-group label { display: block; font-weight: 600; color: var(--text-dark); margin-bottom: 0.5rem; }
-    .form-group input[type="text"], .form-group input[type="date"], .form-group input[type="number"], .form-group select, .form-group textarea { width: 100%; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: 0.375rem; background-color: var(--white-color); box-sizing: border-box; transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out; }
-    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--primary-color); box-shadow: 0 0 0 0.2rem rgba(44, 123, 229, 0.25); outline: none; }
-    
-    .items-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-    .items-table thead { background-color: var(--secondary-color); }
-    .items-table th { padding: 0.75rem; text-align: left; font-weight: 600; color: var(--text-dark); border-bottom: 2px solid var(--border-color); }
-    .items-table td { padding: 0.5rem; vertical-align: top; }
-    .items-table tbody tr { border-bottom: 1px solid var(--border-color); }
-    .items-table td input, .items-table td select { width: 100%; padding: 0.5rem; border: 1px solid transparent; border-radius: 0.25rem; background-color: transparent; }
-    .items-table td input:focus, .items-table td select:focus { border: 1px solid var(--primary-color); background-color: var(--white-color); }
-    .items-table .amount-cell { font-weight: 600; text-align: right; padding: 1rem 0.75rem 0 0; }
-    .items-table .remove-item { background: none; border: none; color: var(--danger-color); cursor: pointer; font-size: 1.25rem; opacity: 0.5; transition: opacity 0.2s; }
-    .items-table tr:hover .remove-item { opacity: 1; }
-    
-    .invoice-footer { display: flex; justify-content: space-between; margin-top: 2rem; gap: 2rem; flex-wrap: wrap;}
-    .notes-section { flex: 2; min-width: 300px; }
-    .totals-section { flex: 1; max-width: 350px; min-width: 280px; }
-    .totals-summary { background-color: var(--secondary-color); padding: 1.5rem; border-radius: 0.5rem; }
-    .total-line { display: flex; justify-content: space-between; margin-bottom: 1rem; }
-    .total-line.grand-total { font-size: 1.25rem; font-weight: bold; color: var(--text-dark); border-top: 2px solid var(--border-color); padding-top: 1rem; }
-    
-    .actions-bar { display: flex; justify-content: flex-end; align-items: center; padding: 1.5rem 0; margin-top: 1.5rem; border-top: 1px solid var(--border-color); gap: 1rem; }
-    .template-controls { display: flex; gap: 0.5rem; }
-</style>
 
-<div class="container">
-<form method="post" id="invoice-form" class="invoice-creation-page">
-    <input type="hidden" name="createInvoice" value="1">
 
-    <div class="invoice-header">
-        <div class="logo-container"><?php echo htmlspecialchars($current_school_name); ?></div>
-        <h1>New Invoice</h1>
+<div class="min-h-screen bg-gray-50/50 py-12 px-4">
+    <div class="max-w-5xl mx-auto">
+        <div class="mb-6">
+    <a href="customer_center.php" class="inline-flex items-center group text-sm font-medium text-gray-500 hover:text-black transition-colors">
+        <i class="fas fa-arrow-left mr-2 text-[10px] group-hover:-translate-x-1 transition-transform"></i>
+        Back
+    </a>
+</div>
+        <?php if (isset($error)): ?>
+            <div class="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
+
+        <form method="post" id="invoice-form" class="space-y-8">
+            <input type="hidden" name="createInvoice" value="1">
+
+            <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+                
+                <div class="p-8 border-b border-gray-100 bg-gray-50/30 flex justify-between items-center">
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-900 tracking-tight"><?= htmlspecialchars($current_school_name) ?></h2>
+                        <p class="text-xs font-semibold text-gray-400 uppercase tracking-widest mt-1">Invoice Generator</p>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-4xl font-light text-gray-200 uppercase tracking-tighter">Draft</span>
+                    </div>
+                </div>
+
+                <div class="p-8 space-y-10">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-10">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">Academic Period</label>
+                                <div class="grid grid-cols-2 gap-2 mt-1">
+                                    <input type="text" name="academic_year" class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black" value="<?= date('Y') . '-' . (date('Y') + 1) ?>" required>
+                                    <select name="term" class="block w-full rounded-md border-gray-200 text-sm">
+                                        <option>Term 1</option><option>Term 2</option><option>Term 3</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="md:col-span-2 space-y-4">
+                            <div>
+                                <label class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">Bill To</label>
+                                <div class="flex p-1 bg-gray-100 rounded-lg w-max mb-3 mt-1">
+                                    <label class="cursor-pointer">
+                                        <input type="radio" name="invoice_type" value="single" class="sr-only peer" checked>
+                                        <span class="px-4 py-1.5 text-xs font-medium rounded-md peer-checked:bg-white peer-checked:shadow-sm inline-block transition-all">Student</span>
+                                    </label>
+                                    <label class="cursor-pointer">
+                                        <input type="radio" name="invoice_type" value="class" class="sr-only peer">
+                                        <span class="px-4 py-1.5 text-xs font-medium rounded-md peer-checked:bg-white peer-checked:shadow-sm inline-block transition-all">Entire Class</span>
+                                    </label>
+                                </div>
+
+                                <div id="student-section">
+                                    <select name="student_id" id="student_id" class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black" onchange="loadFees()">
+                                        <option value="">Search for a student...</option>
+                                        <?php foreach ($students as $student): ?>
+                                            <option value="<?= $student['id'] ?>"><?= htmlspecialchars($student['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div id="class-section" style="display:none">
+                                    <select name="class_id" id="class_id" class="block w-full rounded-md border-gray-200 text-sm focus:ring-black focus:border-black" onchange="loadFees()">
+                                        <option value="">Select a class...</option>
+                                        <?php foreach ($classes as $class): ?>
+                                            <option value="<?= $class['id'] ?>"><?= htmlspecialchars($class['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-8 pt-8 border-t border-gray-50">
+                        <div>
+                            <label class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">Invoice Date</label>
+                            <input type="date" name="invoice_date" value="<?= date('Y-m-d') ?>" class="block w-full border-0 p-0 mt-1 text-sm font-medium focus:ring-0">
+                        </div>
+                        <div class="border-l border-gray-100 pl-8">
+                            <label class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">Due Date</label>
+                            <input type="date" name="due_date" id="due_date" class="block w-full border-0 p-0 mt-1 text-sm font-medium focus:ring-0">
+                        </div>
+                    </div>
+
+                    <div class="pt-4">
+                        <table class="w-full text-sm text-left">
+                            <thead>
+                                <tr class="text-[10px] font-bold uppercase text-gray-400 tracking-widest border-b border-gray-100">
+                                    <th class="pb-4 w-[30%]">Service Item</th>
+                                    <th class="pb-4 w-[30%]">Description</th>
+                                    <th class="pb-4 w-[10%] text-center">Qty</th>
+                                    <th class="pb-4 w-[15%] text-right">Rate</th>
+                                    <th class="pb-4 w-[15%] text-right">Amount</th>
+                                    <th class="pb-4 w-[40px]"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="items-container" class="divide-y divide-gray-50">
+                                </tbody>
+                        </table>
+                        <button type="button" onclick="addItemRow(null, true)" class="mt-6 inline-flex items-center text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors uppercase tracking-tighter">
+                            <i class="fas fa-plus-circle mr-2"></i> Add Custom Line
+                        </button>
+                    </div>
+
+                    <div id="optional-items-container" class="py-4"></div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-16 pt-10 border-t border-gray-100">
+                        <div class="space-y-6">
+                            <div>
+                                <label class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">Notes</label>
+                                <textarea name="notes" rows="3" class="mt-1 block w-full rounded-lg border-gray-200 text-sm focus:ring-black focus:border-black" placeholder="Payment terms, bank details, etc..."></textarea>
+                            </div>
+                            <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+                                <label class="text-[10px] font-bold text-gray-500 uppercase">Load from Template</label>
+                                <div class="flex gap-2 mt-2">
+                                    <select id="template_select" class="block w-full rounded-md border-gray-200 text-xs">
+                                        <option value="">Choose a template...</option>
+                                        <?php foreach ($templates as $t): ?>
+                                            <option value="<?= $t['id'] ?>"><?= htmlspecialchars($t['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <button type="button" onclick="openSaveTemplateModal()" class="px-3 py-1 bg-white border border-gray-200 rounded text-[10px] font-bold hover:bg-gray-100 transition-all uppercase">Save</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-3 bg-gray-50/50 p-6 rounded-2xl h-fit">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-500 font-medium">Subtotal</span>
+                                <span id="subtotal-amount" class="text-gray-900 font-mono">KSH 0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center pt-4 border-t border-gray-200">
+                                <span class="text-base font-bold text-gray-900">Total Due</span>
+                                <span id="total-amount" class="text-2xl font-black text-black font-mono tracking-tighter">KSH 0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-900 px-8 py-4 flex justify-between items-center">
+                    <a href="customer_center.php" class="text-xs font-bold text-gray-400 hover:text-white uppercase tracking-widest transition-colors">Discard Draft</a>
+                    <button type="submit" class="bg-white text-black px-8 py-2.5 rounded-lg text-sm font-bold hover:bg-gray-100 transition-all shadow-xl">
+                        Generate & Finalize
+                    </button>
+                </div>
+            </div>
+        </form>
     </div>
+</div>
 
-    <?php if (isset($error)): ?><div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div><?php endif; ?>
-    <?php if (isset($success) || isset($_GET['success'])): ?><div class="alert alert-success"><?php echo htmlspecialchars($success ?? 'Template saved successfully!'); ?></div><?php endif; ?>
-
-    <div class="invoice-details-grid">
-         <div class="form-group">
-            <label for="academic_year">Academic Year</label>
-            <input type="text" id="academic_year" name="academic_year" class="form-control" value="<?= date('Y') . '-' . (date('Y') + 1) ?>" required onchange="loadFees()">
+<div id="saveTemplateModal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all">
+        <div class="p-6 border-b border-gray-100 flex justify-between items-center">
+            <h3 class="font-bold text-gray-900">Save as Template</h3>
+            <button onclick="closeModal('saveTemplateModal')" class="text-gray-400 hover:text-black">&times;</button>
         </div>
-        <div class="form-group">
-            <label for="term">Term</label>
-            <select id="term" name="term" class="form-control" required onchange="loadFees()">
-                <option>Term 1</option>
-                <option>Term 2</option>
-                <option>Term 3</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label for="student_id">Bill To</label>
-            <div id="student-section">
-                <select name="student_id" id="student_id" class="form-control" onchange="loadFees()" required>
-                    <option value="">Select Student to auto-load fees...</option>
-                    <?php foreach ($students as $student): ?>
-                        <option value="<?php echo $student['id']; ?>" <?php echo (isset($_GET['student_id']) && $_GET['student_id'] == $student['id']) ? 'selected' : ''; ?>>
-                            <?php echo htmlspecialchars($student['name']); ?>
-                        </option>
+        <form id="saveTemplateForm" method="post" class="p-6 space-y-4">
+            <input type="hidden" name="saveTemplate" value="1">
+            <input type="hidden" name="template_items" id="template_items">
+            <div>
+                <label class="text-xs font-bold text-gray-500 uppercase">Template Name</label>
+                <input type="text" name="template_name" required class="mt-1 block w-full rounded-md border-gray-200 text-sm" placeholder="e.g. Grade 1 Term 1 Fees">
+            </div>
+            <div>
+                <label class="text-xs font-bold text-gray-500 uppercase">Class Link (Optional)</label>
+                <select name="class_id" class="mt-1 block w-full rounded-md border-gray-200 text-sm">
+                    <option value="">None</option>
+                    <?php foreach ($classes as $c): ?>
+                        <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
-             <div id="class-section" class="form-group" style="display: none;">
-                <select name="class_id" id="class_id" onchange="loadFees()">
-                    <option value="">Select Class to auto-load fees...</option>
-                    <?php foreach ($classes as $class): ?><option value="<?php echo $class['id']; ?>"><?php echo htmlspecialchars($class['name']); ?></option><?php endforeach; ?>
-                </select>
-            </div>
-        </div>
-        <div>
-            <div class="form-group">
-                <label for="invoice_date">Invoice Date</label>
-                <input type="date" name="invoice_date" id="invoice_date" value="<?php echo date('Y-m-d'); ?>" required>
-            </div>
-            <div class="form-group">
-                <label for="due_date">Due Date</label>
-                <input type="date" name="due_date" id="due_date" required>
-            </div>
-        </div>
-    </div>
-    
-    <div>
-        <div class="form-group">
-            <label>Invoice For</label>
-            <div class="radio-group">
-                <label><input type="radio" name="invoice_type" value="single" checked> Single Student</label>
-                <label><input type="radio" name="invoice_type" value="class"> Entire Class</label>
-            </div>
-        </div>
-    </div>
-
-    <table class="items-table">
-        <thead><tr><th style="width: 30%;">Item</th><th style="width: 30%;">Description</th><th style="width: 10%;">Qty</th><th style="width: 15%;">Rate</th><th style="width: 15%; text-align: right;">Amount</th><th></th></tr></thead>
-        <tbody id="items-container"></tbody>
-    </table>
-    
-    <button type="button" class="btn-secondary" id="add-item-btn" onclick="addItemRow(null, true)">+ Add Line</button>
-
-
-    <div id="optional-items-container" style="margin-top: 1rem;"></div>
-
-    <footer class="invoice-footer">
-        <div class="notes-section">
-            <div class="form-group"><label for="notes">Notes</label><textarea id="notes" name="notes" rows="4" placeholder="Enter notes or payment instructions..."></textarea></div>
-            <div class="form-group"><label for="template_select">Templates</label><div class="template-controls"><select id="template_select"><option value="">Load from template...</option><?php foreach ($templates as $template): ?><option value="<?= $template['id'] ?>"><?= htmlspecialchars($template['name']) ?></option><?php endforeach; ?></select><button type="button" class="btn-secondary" onclick="openSaveTemplateModal()">Save as Template</button></div></div>
-        </div>
-        <div class="totals-section">
-            <div class="totals-summary"><div class="total-line"><span>Subtotal</span><span id="subtotal-amount"><?= format_currency(0) ?></span></div><div class="total-line grand-total"><span>Total</span><span id="total-amount"><?= format_currency(0) ?></span></div></div>
-        </footer>
-
-    <div class="actions-bar">
-        <a href="customer_center.php" class="btn-secondary">Cancel</a>
-        <button type="submit" class="btn-primary">Create Invoice</button>
-    </div>
-</form>
-</div>
-
-<div id="saveTemplateModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Save Invoice as Template</h3>
-            <span class="close" onclick="closeModal('saveTemplateModal')">&times;</span>
-        </div>
-        <form id="saveTemplateForm" method="post">
-            <input type="hidden" name="saveTemplate" value="1">
-            <div class="modal-body">
-                <p>Save the current set of items as a reusable template.</p>
-                <div class="form-group">
-                    <label for="template_name">Template Name</label>
-                    <input type="text" name="template_name" id="template_name" required placeholder="e.g., Grade 1 Term Fees" class="form-control">
-                </div>
-                <div class="form-group">
-                    <label for="template_class_id">Link to Class (Optional)</label>
-                    <select name="class_id" id="template_class_id" class="form-control">
-                        <option value="">-- No Specific Class --</option>
-                        <?php foreach ($classes as $class): ?>
-                            <option value="<?php echo $class['id']; ?>"><?php echo htmlspecialchars($class['name']); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <input type="hidden" name="template_items" id="template_items">
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn-secondary" onclick="closeModal('saveTemplateModal')">Cancel</button>
-                <button type="submit" class="btn-primary">Save Template</button>
+            <div class="flex gap-3 pt-4">
+                <button type="button" onclick="closeModal('saveTemplateModal')" class="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="flex-1 px-4 py-2 bg-black text-white rounded-lg text-sm font-medium hover:bg-gray-800">Save Template</button>
             </div>
         </form>
     </div>
 </div>
 
 <script>
-// Pass PHP arrays to JavaScript
-const allItems = <?php echo json_encode($items_list); ?>;
-let isTemplateLoaded = false; // **NEW**: State variable to track if a template is active
+const allItems = <?= json_encode($items_list); ?>;
+let isTemplateLoaded = false;
 
-// Currency helper function
 function formatCurrencyJS(amount) {
-    const symbol = '<?= $_SESSION['currency_symbol'] ?? '$' ?>';
-    return symbol + parseFloat(amount).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+    return 'KSH ' + parseFloat(amount).toLocaleString(undefined, {minimumFractionDigits: 2});
 }
 
-function openModal(modalId) { document.getElementById(modalId).style.display = 'block'; }
-function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
-function removeItem(btn){ 
-    btn.closest("tr").remove(); 
-    isTemplateLoaded = false; // **MODIFICATION**: Unlock the form on manual change
-    updateTotals(); 
-}
+function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
 
-function addItemEventListeners(row){
-    row.querySelector(".item-select")?.addEventListener("change", function() {
-        const selectedOption = this.options[this.selectedIndex];
-        row.querySelector(".description").value = selectedOption.dataset.description || this.options[this.selectedIndex].text;
+function addItemRow(item = null, isManual = true) {
+    if (isManual) isTemplateLoaded = false;
+    const container = document.getElementById("items-container");
+    const row = document.createElement('tr');
+    row.className = "group hover:bg-gray-50/50 transition-colors";
+    
+    let itemHtml = isManual 
+        ? `<td class="py-4"><select name="item_id[]" class="item-select w-full border-gray-200 rounded-md text-sm"><option value="">Select Item...</option>${allItems.map(i => `<option value="${i.id}" data-description="${i.description || ''}">${i.name}</option>`).join('')}</select></td>`
+        : `<td class="py-4 font-semibold text-gray-900"><input type="hidden" name="item_id[]" value="${item.item_id}"><span>${item.item_name}</span></td>`;
+
+    row.innerHTML = `
+        ${itemHtml}
+        <td class="py-4 px-2"><input type="text" name="description[]" class="description w-full border-transparent bg-transparent focus:border-gray-200 rounded-md text-sm" placeholder="Details"></td>
+        <td class="py-4 px-2"><input type="number" name="quantity[]" class="quantity w-full border-transparent bg-transparent focus:border-gray-200 rounded-md text-sm text-center" value="1"></td>
+        <td class="py-4 px-2"><input type="number" name="unit_price[]" class="unit-price w-full border-transparent bg-transparent focus:border-gray-200 rounded-md text-sm text-right font-mono" step="0.01" value="0.00"></td>
+        <td class="py-4 text-right font-mono font-bold amount-cell text-gray-900">0.00</td>
+        <td class="py-4 text-right">
+            <button type="button" onclick="this.closest('tr').remove(); updateTotals();" class="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">
+                <i class="fas fa-times-circle"></i>
+            </button>
+        </td>
+    `;
+
+    container.appendChild(row);
+    if (item) {
+        if(isManual && row.querySelector('.item-select')) row.querySelector('.item-select').value = item.item_id;
+        row.querySelector('.description').value = item.description || item.item_name || '';
+        row.querySelector('.quantity').value = item.quantity || 1;
+        row.querySelector('.unit-price').value = parseFloat(item.amount || item.unit_price || 0).toFixed(2);
+    }
+    
+    row.querySelector(".quantity").addEventListener("input", () => updateRow(row));
+    row.querySelector(".unit-price").addEventListener("input", () => updateRow(row));
+    if(isManual) row.querySelector(".item-select").addEventListener("change", function() {
+        row.querySelector(".description").value = this.options[this.selectedIndex].dataset.description || this.options[this.selectedIndex].text;
     });
-    row.querySelector(".quantity").addEventListener("input", () => updateItemAmount(row));
-    row.querySelector(".unit-price").addEventListener("input", () => updateItemAmount(row));
+    updateRow(row);
 }
 
-function updateItemAmount(row){
-    const quantity = parseFloat(row.querySelector(".quantity").value) || 0;
-    const unitPrice = parseFloat(row.querySelector(".unit-price").value) || 0;
-    row.querySelector(".amount-cell").textContent = formatCurrencyJS(quantity * unitPrice);
+function updateRow(row) {
+    const q = parseFloat(row.querySelector(".quantity").value) || 0;
+    const p = parseFloat(row.querySelector(".unit-price").value) || 0;
+    row.querySelector(".amount-cell").textContent = (q * p).toFixed(2);
     updateTotals();
 }
 
-function updateTotals(){
+function updateTotals() {
     let total = 0;
-    document.querySelectorAll("#items-container tr").forEach(row => {
-        const quantity = parseFloat(row.querySelector(".quantity").value) || 0;
-        const unitPrice = parseFloat(row.querySelector(".unit-price").value) || 0;
-        total += quantity * unitPrice;
-    });
+    document.querySelectorAll(".amount-cell").forEach(cell => total += parseFloat(cell.textContent) || 0);
     document.getElementById("subtotal-amount").textContent = formatCurrencyJS(total);
     document.getElementById("total-amount").textContent = formatCurrencyJS(total);
 }
@@ -341,190 +330,71 @@ function updateTotals(){
 function openSaveTemplateModal() {
     const items = [];
     document.querySelectorAll('#items-container tr').forEach(row => {
-        const itemSelect = row.querySelector('.item-select');
-        const itemIdInput = row.querySelector('input[name="item_id[]"]');
-        const itemId = itemSelect ? itemSelect.value : (itemIdInput ? itemIdInput.value : null);
-
-        if (itemId) {
-            items.push({ 
-                item_id: itemId, 
-                description: row.querySelector('.description').value, 
-                quantity: row.querySelector('.quantity').value, 
-                unit_price: row.querySelector('.unit-price').value 
-            });
-        }
+        const id = row.querySelector('[name="item_id[]"]').value;
+        if (id) items.push({ 
+            item_id: id, 
+            description: row.querySelector('.description').value, 
+            quantity: row.querySelector('.quantity').value, 
+            unit_price: row.querySelector('.unit-price').value 
+        });
     });
-    if (items.length === 0) { alert("Please add at least one item to save as a template."); return; }
+    if (!items.length) return alert("Add items first");
     document.getElementById('template_items').value = JSON.stringify(items);
     openModal('saveTemplateModal');
 }
 
-/**
- * Universal function to add an item row to the invoice table.
- * @param {object|null} item - Object with item details (item_id, item_name, amount, etc.). If null, adds a blank row.
- * @param {boolean} isManual - If true, the row is fully editable with a dropdown. If false, it's for auto-loaded fees.
- */
-function addItemRow(item = null, isManual = true) {
-    // **MODIFICATION**: If adding a manual row, unlock the form from template mode
-    if (isManual) {
-        isTemplateLoaded = false;
-    }
-
-    const container = document.getElementById("items-container");
-    const newRow = container.insertRow();
-    
-    let itemCellHtml;
-    if (isManual) {
-        let optionsHtml = allItems.map(i => `<option value="${i.id}" data-description="${i.description || ''}">${i.name}</option>`).join('');
-        itemCellHtml = `<td><select name="item_id[]" class="item-select"><option value="">Select Item...</option>${optionsHtml}</select></td>`;
-    } else {
-        itemCellHtml = `<td><input type="hidden" name="item_id[]" value="${item.item_id}"><span>${item.item_name}</span></td>`;
-    }
-
-    newRow.innerHTML = `
-        ${itemCellHtml}
-        <td><input type="text" name="description[]" class="description" placeholder="Item description"></td>
-        <td><input type="number" name="quantity[]" class="quantity" min="1" value="1" required></td>
-        <td><input type="number" name="unit_price[]" class="unit-price" step="0.01" value="0.00" required></td>
-        <td class="amount-cell"><?= format_currency(0) ?></td>
-        <td><button type="button" class="remove-item" onclick="removeItem(this)">×</button></td>
-    `;
-
-    if (item) {
-        if(isManual) newRow.querySelector('.item-select').value = item.item_id;
-        newRow.querySelector('.description').value = item.description || item.item_name || '';
-        newRow.querySelector('.quantity').value = item.quantity || 1;
-        newRow.querySelector('.unit-price').value = parseFloat(item.amount || item.unit_price || 0).toFixed(2);
-    }
-    
-    if (!isManual) {
-         newRow.querySelector('.remove-item').style.display = 'none';
-    }
-    
-    addItemEventListeners(newRow);
-    updateItemAmount(newRow);
-}
-
-
 function loadFees() {
-    // **MODIFICATION**: Prevent auto-loading if a template is active
-    if (isTemplateLoaded) {
-        return;
-    }
+    if (isTemplateLoaded) return;
+    const type = document.querySelector('input[name="invoice_type"]:checked').value;
+    const sid = document.getElementById('student_id').value;
+    const cid = document.getElementById('class_id').value;
+    const yr = document.getElementsByName('academic_year')[0].value;
+    const trm = document.getElementsByName('term')[0].value;
 
-    const isSingleStudentMode = document.querySelector('input[name="invoice_type"]:checked').value === 'single';
-    const studentId = document.getElementById('student_id').value;
-    const classId = document.getElementById('class_id').value;
-    const academicYear = document.getElementById('academic_year').value;
-    const term = document.getElementById('term').value;
-    const itemsContainer = document.getElementById('items-container');
-    const optionalContainer = document.getElementById('optional-items-container');
-    
-    itemsContainer.innerHTML = '';
-    optionalContainer.innerHTML = '';
+    if ((type === 'single' && !sid) || (type === 'class' && !cid)) return;
 
-    if (!academicYear || !term) {
-        updateTotals();
-        return;
-    }
-
-    let fetchUrl = '';
-    if (isSingleStudentMode && studentId) {
-        fetchUrl = `get_student_fees.php?student_id=${studentId}&academic_year=${encodeURIComponent(academicYear)}&term=${encodeURIComponent(term)}`;
-    } else if (!isSingleStudentMode && classId) {
-        fetchUrl = `get_student_fees.php?class_id=${classId}&academic_year=${encodeURIComponent(academicYear)}&term=${encodeURIComponent(term)}`;
-    } else {
-        updateTotals();
-        return;
-    }
-
-    fetch(fetchUrl)
-        .then(res => res.json())
+    fetch(`get_student_fees.php?${type}_id=${type === 'single' ? sid : cid}&academic_year=${yr}&term=${trm}`)
+        .then(r => r.json())
         .then(data => {
             if (data.success) {
-                data.mandatory_items.forEach(item => addItemRow(item, false));
-                if (data.optional_items.length > 0) addOptionalItemsSelector(data.optional_items);
-                updateTotals();
-            } else {
-                alert('Error loading fees: ' + data.error);
+                document.getElementById('items-container').innerHTML = '';
+                data.mandatory_items.forEach(i => addItemRow(i, false));
                 updateTotals();
             }
-        })
-        .catch(err => console.error('Fetch Error:', err));
+        });
 }
 
-function addOptionalItemsSelector(optionalItems) {
-    const container = document.getElementById('optional-items-container');
-    let optionsHtml = optionalItems.map(item => 
-        `<option value='${JSON.stringify(item)}'>${item.item_name} - $${parseFloat(item.amount).toFixed(2)}</option>`
-    ).join('');
-    container.innerHTML = `<hr><div class="form-group" style="max-width: 400px; display: inline-block;"><label>Add Optional Service</label><select id="optional-item-dropdown" class="form-control"><option value="">Select an optional item...</option>${optionsHtml}</select></div> <button type="button" class="btn-secondary" onclick="addSelectedOptionalItem()">+ Add to Invoice</button>`;
-}
+document.addEventListener('DOMContentLoaded', () => {
+    const d = new Date(); d.setDate(d.getDate() + 30);
+    document.getElementById('due_date').valueAsDate = d;
 
-function addSelectedOptionalItem() {
-    const dropdown = document.getElementById('optional-item-dropdown');
-    if (dropdown.value) {
-        const item = JSON.parse(dropdown.value);
-        item.description = item.item_name; 
-        addItemRow(item, true); 
-        dropdown.selectedIndex = 0; 
-    }
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + 30);
-    document.getElementById('due_date').valueAsDate = dueDate;
-    
-    document.querySelectorAll('input[name="invoice_type"]').forEach(radio => {
-        radio.addEventListener('change', function() {
-            const isSingle = (this.value === 'single');
-            document.getElementById('student-section').style.display = isSingle ? 'block' : 'none';
-            document.getElementById('class-section').style.display = isSingle ? 'none' : 'block';
-            document.getElementById('student_id').required = isSingle;
-            document.getElementById('class_id').required = !isSingle;
-            
-            isTemplateLoaded = false; // Always unlock when switching modes
+    document.querySelectorAll('input[name="invoice_type"]').forEach(r => {
+        r.addEventListener('change', e => {
+            document.getElementById('student-section').style.display = e.target.value === 'single' ? 'block' : 'none';
+            document.getElementById('class-section').style.display = e.target.value === 'class' ? 'block' : 'none';
+            isTemplateLoaded = false;
             loadFees();
         });
     });
 
     document.getElementById('template_select').addEventListener('change', function() {
-        const templateId = this.value;
-        if (!templateId) return;
-
-        fetch(`get_template.php?id=${templateId}`)
-            .then(res => res.json())
+        if (!this.value) return;
+        fetch(`get_template.php?id=${this.value}`)
+            .then(r => r.json())
             .then(data => {
                 if (data.success) {
                     document.getElementById('items-container').innerHTML = '';
-                    document.getElementById('optional-items-container').innerHTML = '';
                     data.items.forEach(item => {
-                        const fullItem = allItems.find(i => i.id == item.item_id);
-                        if (fullItem) {
-                            item.item_name = fullItem.name;
-                            addItemRow(item, true);
-                        }
+                        const base = allItems.find(i => i.id == item.item_id);
+                        if (base) { item.item_name = base.name; addItemRow(item, true); }
                     });
-                    // **MODIFICATION**: Lock the form after successfully loading template
-                    isTemplateLoaded = true; 
+                    isTemplateLoaded = true;
                     updateTotals();
-                    this.selectedIndex = 0; // Reset dropdown
-                } else {
-                    alert('Error loading template: ' + data.error);
+                    this.selectedIndex = 0;
                 }
             });
     });
-    
-    document.querySelector('input[name="invoice_type"]:checked').dispatchEvent(new Event('change'));
-    
-    if (document.getElementById('student_id').value) {
-        loadFees();
-    }
 });
 </script>
 
-<?php
-include 'footer.php';
-if (ob_get_level() > 0) ob_end_flush();
-?>
+<?php include 'footer.php'; ob_end_flush(); ?>
